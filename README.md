@@ -36,5 +36,9 @@ python3 -m http.server 4174
 Then open:
 
 ```text
-http://localhost:4174/?v=37
+http://localhost:4174/?v=38
 ```
+
+## License
+
+This project is open source under the [MIT License](LICENSE).
