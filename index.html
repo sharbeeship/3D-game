@@ -1,10 +1,10 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>第一人称枪战小游戏</title>
-    <link rel="stylesheet" href="./style.css?v=36" />
+    <title>3D First-Person Shooter</title>
+    <link rel="stylesheet" href="./style.css?v=37" />
   </head>
   <body>
     <canvas id="game"></canvas>
@@ -15,16 +15,16 @@
     ></div>
     <div id="scopeOverlay" class="scope-overlay" aria-hidden="true"></div>
     <div class="hud">
-      <div id="weaponSlots" class="weapon-slots" aria-label="手持枪械"></div>
-      <div>分数：<span id="score">0</span></div>
-      <div class="hint">点击画面锁定鼠标 · WASD 移动 · Shift 跑步 · 空格跳跃 · F 拾取 · E 弃枪 · 左键射击/挥拳 · 右键开镜 · 开镜滚轮调倍 · 1/2/Q 切枪 · Esc 释放鼠标</div>
+      <div id="weaponSlots" class="weapon-slots" aria-label="Equipped weapons"></div>
+      <div>Score: <span id="score">0</span></div>
+      <div class="hint">Click to lock the mouse · WASD move · Shift sprint · Space jump · F pick up · E drop · LMB shoot/punch · RMB ADS · Scroll to zoom while ADS · 1/2/Q switch · Esc release mouse</div>
     </div>
     <div id="weaponPrompt" class="weapon-prompt hidden" aria-live="polite"></div>
     <div id="start" class="start">
-      <h1>第一人称枪战小游戏</h1>
-      <p>点击开始锁定鼠标。拾取枪械后可射击、开镜、切枪；空手时左键挥拳。贴墙时枪和手不会穿模。</p>
-      <button>开始游戏</button>
+      <h1>3D First-Person Shooter</h1>
+      <p>Click start to lock the mouse. Pick up a gun to shoot, aim, and switch weapons. Punch with the left mouse button when unarmed. Guns and hands stay solid against walls.</p>
+      <button>Start</button>
     </div>
-    <script src="./game.js?v=36"></script>
+    <script src="./game.js?v=37"></script>
   </body>
 </html>

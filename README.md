@@ -1,39 +1,40 @@
-# 第一人称枪战小游戏
+# 3D First-Person Shooter
 
-一个零依赖的浏览器 WebGL 小游戏。
+A zero-dependency browser WebGL game.
 
-## 操作
+## Controls
 
-- 点击画面锁定鼠标，`Esc` 释放鼠标
-- `WASD` 移动，`A` / `D` 侧移
-- `Shift` 跑步
-- `空格` 跳跃
-- `F` 拾取附近枪械（会替换手里的枪）
-- `E` 丢弃当前武器
-- `1` / `2` / `Q` 切换武器，带收枪抬枪动画
-- 持枪时左键射击，右键开镜
-- 空手时左键挥拳
+- Click the screen to lock the mouse, `Esc` to release it
+- `WASD` to move, `A` / `D` to strafe
+- `Shift` to sprint
+- `Space` to jump
+- `F` to pick up a nearby gun (replaces the gun in hand)
+- `E` to drop the current weapon
+- `1` / `2` / `Q` to switch weapons, with holster and raise animation
+- Left click to shoot when armed, right click to aim down sights
+- Left click to punch when unarmed
+- Scroll the mouse wheel while aiming to adjust zoom
 
-## 已有内容
+## Features
 
-- 棕色地面、掩体墙和障碍物都是实体，不能穿墙
-- 枪和手也是实体：正对墙或侧着走贴墙时，模型和枪会收回，不会穿进墙里
-- 地图中会生成 AUG、AKM、M4A1，最多带 2 把
-- 三把枪射速、后坐力、枪声都不同
-- 走路、跑步是不规则的踩草地声；挥拳时不播脚步声
-- 子弹打中墙面会留弹痕，一段时间后消失
-- 开镜时隐藏枪支，只保留准星和瞄具遮罩
+- Solid brown ground, cover walls, and obstacles; you cannot walk through them
+- Guns and hands are solid too: facing a wall or strafing along one pulls the model back so it does not clip through
+- AUG, AKM, and M4A1 spawn on the map; you can carry up to 2 guns
+- Each gun has a different fire rate, recoil, and gunshot
+- Walking and running use grass footstep sounds synced to the arm swing; footsteps mute while punching
+- Bullets leave holes on walls that fade after a while
+- Aiming down sights hides the gun and keeps the reticle and scope overlay
 
-## 运行
+## Run
 
-在项目目录启动静态服务器：
+Start a static server in the project folder:
 
 ```bash
 python3 -m http.server 4174
 ```
 
-然后打开：
+Then open:
 
 ```text
-http://localhost:4174/?v=36
+http://localhost:4174/?v=37
 ```

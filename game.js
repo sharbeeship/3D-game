@@ -9,7 +9,7 @@ const crosshairEl = document.querySelector("#crosshair");
 const scopeOverlayEl = document.querySelector("#scopeOverlay");
 
 if (!gl) {
-  startEl.innerHTML = "<h1>浏览器不支持 WebGL</h1><p>请使用较新的 Chrome、Edge、Firefox 或 Safari。</p>";
+  startEl.innerHTML = "<h1>WebGL is not supported</h1><p>Please use a recent Chrome, Edge, Firefox, or Safari.</p>";
   throw new Error("WebGL is not supported.");
 }
 
@@ -70,8 +70,8 @@ const WEAPON_DEFS = {
   aug: {
     kind: "aug",
     name: "AUG A3",
-    type: "5.56mm 突击步枪",
-    layout: "无托布局",
+    type: "5.56mm Assault Rifle",
+    layout: "Bullpup",
     fireRate: 0.086,
     recoil: 0.0064,
     recoilYaw: 0.0022,
@@ -84,8 +84,8 @@ const WEAPON_DEFS = {
   akm: {
     kind: "akm",
     name: "AKM",
-    type: "7.62mm 突击步枪",
-    layout: "传统布局",
+    type: "7.62mm Assault Rifle",
+    layout: "Conventional layout",
     fireRate: 0.1,
     recoil: 0.011,
     recoilYaw: 0.0064,
@@ -98,8 +98,8 @@ const WEAPON_DEFS = {
   m4: {
     kind: "m4",
     name: "M4A1",
-    type: "5.56mm 卡宾枪",
-    layout: "短管卡宾",
+    type: "5.56mm Carbine",
+    layout: "Short-barrel carbine",
     fireRate: 0.072,
     recoil: 0.0072,
     recoilYaw: 0.0028,
@@ -253,7 +253,7 @@ document.addEventListener("wheel", (event) => {
 document.addEventListener("pointerlockchange", () => {
   const locked = document.pointerLockElement === canvas;
   startEl.classList.toggle("hidden", locked);
-  startButton.textContent = locked ? "开始游戏" : "继续游戏";
+  startButton.textContent = locked ? "Start" : "Resume";
   if (locked) {
     unlockAudio();
   }
@@ -1658,7 +1658,7 @@ function updateWeaponHud() {
       const label = index === 0 ? "1" : "2";
       return `
         <div class="${wrapClass}">
-          <div class="${classes}" title="${weapon ? weapon.name : "空槽位"}">
+          <div class="${classes}" title="${weapon ? weapon.name : "Empty slot"}">
             ${weapon ? weaponIconSvg(weapon.kind) : ""}
           </div>
           <div class="weapon-slot__name">${weapon ? weaponShortName(weapon.kind) : "—"}</div>
@@ -1682,12 +1682,12 @@ function updateWeaponPrompt() {
   if (pickupAnimation) {
     weaponPromptEl.classList.remove("hidden");
     weaponPromptEl.innerHTML = `
-      <div class="weapon-prompt__title">正在拾取</div>
+      <div class="weapon-prompt__title">Picking up</div>
       <div class="weapon-row">
         <div class="weapon-row__key">F</div>
         <div>
           <div class="weapon-row__name">${pickupAnimation.weapon.name}</div>
-          <div class="weapon-row__meta">下蹲拾取中 · ${pickupAnimation.replaceOnly ? "替换手中武器" : "装备到当前槽位"}</div>
+          <div class="weapon-row__meta">Crouching to pick up · ${pickupAnimation.replaceOnly ? "Replacing held weapon" : "Equipping current slot"}</div>
         </div>
         <div class="weapon-row__distance">${Math.round(getPickupProgress() * 100)}%</div>
       </div>
@@ -1703,7 +1703,7 @@ function updateWeaponPrompt() {
 
   weaponPromptEl.classList.remove("hidden");
   weaponPromptEl.innerHTML = `
-    <div class="weapon-prompt__title">附近物资</div>
+    <div class="weapon-prompt__title">Nearby loot</div>
     ${nearbyWeapons
       .map(
         (weapon, index) => `
