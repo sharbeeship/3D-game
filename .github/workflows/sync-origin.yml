@@ -1,0 +1,45 @@
+name: Sync Origin and GitHub
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: origin-github-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.event_name != 'push' || github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Sync with Cursor Origin
+        env:
+          ORIGIN_TOKEN: ${{ secrets.ORIGIN_TOKEN }}
+          GIT_AUTHOR_NAME: github-actions[bot]
+          GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+        run: |
+          set -euo pipefail
+          if [ -z "${ORIGIN_TOKEN}" ]; then
+            echo "ORIGIN_TOKEN is not set. Skipping Origin sync."
+            echo "From this clone, git push origin already updates both remotes."
+            exit 0
+          fi
+          git remote add cursor "https://origin.cursor.com/sharbeeship/3D-game.git"
+          export GIT_CONFIG_COUNT=1
+          export GIT_CONFIG_KEY_0="credential.https://origin.cursor.com.helper"
+          export GIT_CONFIG_VALUE_0='!f() { echo username=x-access-token; echo password='"$ORIGIN_TOKEN"'; }; f'
+          export SYNC_ORIGIN_REMOTE=cursor
+          export SYNC_GITHUB_REMOTE=origin
+          bash scripts/sync-origin-github.sh

@@ -39,6 +39,22 @@ Then open:
 http://localhost:4174/?v=38
 ```
 
+## Remotes
+
+- Cursor Origin (not public): `https://origin.cursor.com/sharbeeship/3D-game.git`
+- GitHub: `https://github.com/sharbeeship/3D-game`
+
+This clone keeps both in sync. `git push origin` sends `main` to Origin and GitHub. If the two remotes ever diverge (for example after a GitHub web edit), run:
+
+```bash
+./scripts/sync-origin-github.sh
+```
+
+That fetches both remotes, merges `main`, and pushes the result to both. It never force-pushes.
+
+Optional cloud sync: add a GitHub Actions secret named `ORIGIN_TOKEN` (an Origin Git HTTPS token, username `x-access-token`). The workflow in `.github/workflows/sync-origin.yml` then copies commits both ways on a schedule and on GitHub pushes.
+
 ## License
 
 This project is open source under the [MIT License](LICENSE).
+
