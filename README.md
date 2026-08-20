@@ -1,6 +1,6 @@
 # 3D First-Person Shooter
 
-A zero-dependency browser WebGL game.
+A zero-dependency browser WebGL game. 中文说明见 [README-CN.md](README-CN.md).
 
 ## Controls
 
