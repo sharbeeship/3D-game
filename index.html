@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>3D First-Person Shooter</title>
-    <link rel="stylesheet" href="./style.css?v=38" />
+    <link rel="stylesheet" href="./style.css?v=108" />
   </head>
   <body>
     <canvas id="game"></canvas>
@@ -17,15 +17,10 @@
     <div class="hud">
       <div id="weaponSlots" class="weapon-slots" aria-label="Equipped weapons"></div>
       <div>Score: <span id="score">0</span></div>
-      <div class="hint">Click to lock the mouse · WASD move · Shift sprint · Space jump · F pick up · E drop · LMB shoot/punch · RMB ADS · Scroll to zoom while ADS · 1/2/Q switch · Esc release mouse</div>
+      <div class="hint">Click to lock the mouse · WASD move · Shift sprint · Space jump · F pick up · E drop · LMB shoot/punch · RMB ADS · Scroll to zoom while ADS · 1/2/Q switch · C camera · O god view · Esc release mouse</div>
     </div>
     <div id="weaponPrompt" class="weapon-prompt hidden" aria-live="polite"></div>
-    <div id="start" class="start">
-      <h1>3D First-Person Shooter</h1>
-      <p>Click start to lock the mouse. Pick up a gun to shoot, aim, and switch weapons. Punch with the left mouse button when unarmed. Guns and hands stay solid against walls.</p>
-      <p>Open source under the MIT License.</p>
-      <button>Start</button>
-    </div>
-    <script src="./game.js?v=38"></script>
+    <script src="./gltf.js?v=108"></script>
+    <script src="./game.js?v=108"></script>
   </body>
 </html>

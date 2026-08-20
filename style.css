@@ -33,6 +33,10 @@ body {
   transform: translate(-50%, -50%);
 }
 
+.crosshair.hidden {
+  display: none;
+}
+
 .crosshair::before,
 .crosshair::after {
   content: "";
@@ -72,7 +76,7 @@ body {
   z-index: 3;
   pointer-events: none;
   opacity: 0;
-  transition: opacity 0.12s ease;
+  transition: none;
   background:
     radial-gradient(
       circle at center,
@@ -82,10 +86,6 @@ body {
       rgba(0, 0, 0, 0.72) 34vmin,
       rgba(0, 0, 0, 0.94) 100%
     );
-}
-
-.scope-overlay.active {
-  opacity: 1;
 }
 
 .scope-overlay::before {
@@ -257,45 +257,4 @@ body {
 .weapon-row__distance {
   color: rgba(255, 255, 255, 0.64);
   font-size: 12px;
-}
-
-.start {
-  position: fixed;
-  inset: 0;
-  z-index: 3;
-  display: grid;
-  place-content: center;
-  gap: 16px;
-  padding: 24px;
-  text-align: center;
-  background:
-    radial-gradient(circle at center, rgba(255, 230, 120, 0.16), transparent 32%),
-    rgba(8, 8, 12, 0.86);
-}
-
-.start.hidden {
-  display: none;
-}
-
-.start h1 {
-  margin: 0;
-  font-size: clamp(32px, 6vw, 64px);
-}
-
-.start p {
-  max-width: 520px;
-  margin: 0;
-  color: rgba(255, 255, 255, 0.78);
-}
-
-.start button {
-  justify-self: center;
-  padding: 12px 22px;
-  border: 0;
-  border-radius: 999px;
-  background: #f7c948;
-  color: #211900;
-  cursor: pointer;
-  font: inherit;
-  font-weight: 700;
 }

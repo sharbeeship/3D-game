@@ -1,15 +1,13 @@
 const canvas = document.querySelector("#game");
 const gl = canvas.getContext("webgl");
 const scoreEl = document.querySelector("#score");
-const startEl = document.querySelector("#start");
-const startButton = startEl.querySelector("button");
 const weaponPromptEl = document.querySelector("#weaponPrompt");
 const weaponSlotsEl = document.querySelector("#weaponSlots");
 const crosshairEl = document.querySelector("#crosshair");
 const scopeOverlayEl = document.querySelector("#scopeOverlay");
 
 if (!gl) {
-  startEl.innerHTML = "<h1>WebGL is not supported</h1><p>Please use a recent Chrome, Edge, Firefox, or Safari.</p>";
+  document.body.textContent = "WebGL is not supported. Please use a recent Chrome, Edge, Firefox, or Safari.";
   throw new Error("WebGL is not supported.");
 }
 
@@ -42,6 +40,116 @@ const positionLocation = gl.getAttribLocation(program, "aPosition");
 const colorLocation = gl.getAttribLocation(program, "aColor");
 const viewProjectionLocation = gl.getUniformLocation(program, "uViewProjection");
 const vertexBuffer = gl.createBuffer();
+gl.getExtension("OES_element_index_uint");
+
+const pbrVertexSource = `
+  attribute vec3 aPosition;
+  attribute vec3 aNormal;
+  attribute vec2 aUV;
+  attribute vec4 aTangent;
+
+  uniform mat4 uMVP;
+  uniform mat4 uModel;
+
+  varying vec3 vWorldPos;
+  varying vec3 vNormal;
+  varying vec3 vTangent;
+  varying float vBitangentSign;
+  varying vec2 vUV;
+
+  void main() {
+    vec4 world = uModel * vec4(aPosition, 1.0);
+    vWorldPos = world.xyz;
+    vNormal = mat3(uModel[0].xyz, uModel[1].xyz, uModel[2].xyz) * aNormal;
+    vTangent = mat3(uModel[0].xyz, uModel[1].xyz, uModel[2].xyz) * aTangent.xyz;
+    vBitangentSign = aTangent.w;
+    vUV = aUV;
+    gl_Position = uMVP * vec4(aPosition, 1.0);
+  }
+`;
+
+const pbrFragmentSource = `
+  precision mediump float;
+
+  uniform sampler2D uBaseColor;
+  uniform sampler2D uMetallicRoughness;
+  uniform sampler2D uNormalMap;
+  uniform vec3 uCameraPos;
+  uniform vec3 uLightDir;
+  uniform vec3 uLightColor;
+  uniform float uShadow;
+  uniform vec4 uBaseColorFactor;
+  uniform float uMetallicFactor;
+  uniform float uRoughnessFactor;
+  uniform float uExposure;
+
+  varying vec3 vWorldPos;
+  varying vec3 vNormal;
+  varying vec3 vTangent;
+  varying float vBitangentSign;
+  varying vec2 vUV;
+
+  void main() {
+    vec4 albedoSample = texture2D(uBaseColor, vUV) * uBaseColorFactor;
+    vec3 albedo = albedoSample.rgb;
+    vec3 mr = texture2D(uMetallicRoughness, vUV).rgb;
+    float roughness = clamp(mr.g * uRoughnessFactor, 0.08, 1.0);
+    float metallic = clamp(mr.b * uMetallicFactor, 0.0, 1.0);
+
+    vec3 N = normalize(vNormal);
+    vec3 T = normalize(vTangent - N * dot(N, vTangent));
+    vec3 B = cross(N, T) * vBitangentSign;
+    vec3 nSample = texture2D(uNormalMap, vUV).xyz * 2.0 - 1.0;
+    N = normalize(mat3(T, B, N) * nSample);
+    if (!gl_FrontFacing) N = -N;
+
+    vec3 L = normalize(uLightDir);
+    vec3 V = normalize(uCameraPos - vWorldPos);
+    vec3 H = normalize(L + V);
+    float sun = max(dot(N, L), 0.0);
+    float NdotL = sun * uShadow;
+    float sky = 0.2 + 0.16 * max(N.y, 0.0);
+    float spec = pow(max(dot(N, H), 0.0), mix(12.0, 96.0, 1.0 - roughness));
+    vec3 f0 = mix(vec3(0.04), albedo, metallic);
+    vec3 diffuse = albedo * (1.0 - metallic) * (sky + 0.92 * NdotL);
+    vec3 color = (diffuse + f0 * spec * NdotL) * uLightColor * uExposure;
+    gl_FragColor = vec4(color, albedoSample.a);
+  }
+`;
+
+const pbrProgram = createProgram(pbrVertexSource, pbrFragmentSource);
+const pbr = {
+  position: gl.getAttribLocation(pbrProgram, "aPosition"),
+  normal: gl.getAttribLocation(pbrProgram, "aNormal"),
+  uv: gl.getAttribLocation(pbrProgram, "aUV"),
+  tangent: gl.getAttribLocation(pbrProgram, "aTangent"),
+  mvp: gl.getUniformLocation(pbrProgram, "uMVP"),
+  model: gl.getUniformLocation(pbrProgram, "uModel"),
+  cameraPos: gl.getUniformLocation(pbrProgram, "uCameraPos"),
+  lightDir: gl.getUniformLocation(pbrProgram, "uLightDir"),
+  lightColor: gl.getUniformLocation(pbrProgram, "uLightColor"),
+  shadow: gl.getUniformLocation(pbrProgram, "uShadow"),
+  baseColorFactor: gl.getUniformLocation(pbrProgram, "uBaseColorFactor"),
+  metallicFactor: gl.getUniformLocation(pbrProgram, "uMetallicFactor"),
+  roughnessFactor: gl.getUniformLocation(pbrProgram, "uRoughnessFactor"),
+  exposure: gl.getUniformLocation(pbrProgram, "uExposure"),
+  baseColor: gl.getUniformLocation(pbrProgram, "uBaseColor"),
+  metallicRoughness: gl.getUniformLocation(pbrProgram, "uMetallicRoughness"),
+  normalMap: gl.getUniformLocation(pbrProgram, "uNormalMap"),
+};
+
+const weaponModels = { aug: null, akm: null, m4: null };
+const handModels = { idle: null, grip: null, fist: null, gripLeft: null };
+const bodyModels = { torso: null, leg: null, head: null, arm: null, forearm: null };
+const sunLightDir = normalize([0.32, 0.88, 0.22]);
+const CAMERA_MODES = ["first", "back", "front"];
+let cameraModeIndex = 0;
+let godView = false;
+const godCamera = {
+  position: [0, 6, -4],
+  yaw: 0,
+  pitch: -0.55,
+};
 
 const keys = new Set();
 const player = {
@@ -80,6 +188,14 @@ const WEAPON_DEFS = {
     bulletSpeed: 240,
     tracerLength: 2.4,
     tracerColor: [1, 0.84, 0.38],
+    model: "models/weapons/aug.glb",
+    viewScale: 1.08,
+    viewOffset: [0.36, -0.32, 0.68],
+    viewEuler: [0.05, 0.14, -0.1],
+    viewGrip: [0.0, -0.07, 0.03],
+    viewHandguard: [0.0, 0.04, 0.46],
+    viewScope: [0.0, 0.16, 0.0],
+    groundScale: 1,
   },
   akm: {
     kind: "akm",
@@ -94,6 +210,14 @@ const WEAPON_DEFS = {
     bulletSpeed: 210,
     tracerLength: 2.8,
     tracerColor: [1, 0.68, 0.22],
+    model: "models/weapons/akm.glb",
+    viewScale: 1.1,
+    viewOffset: [0.37, -0.33, 0.7],
+    viewEuler: [0.045, 0.13, -0.09],
+    viewGrip: [0.0, -0.07, 0.03],
+    viewHandguard: [0.0, 0.035, 0.36],
+    viewScope: [0.0, 0.095, 0.12],
+    groundScale: 1,
   },
   m4: {
     kind: "m4",
@@ -108,17 +232,31 @@ const WEAPON_DEFS = {
     bulletSpeed: 255,
     tracerLength: 2.1,
     tracerColor: [1, 0.9, 0.45],
+    model: "models/weapons/m4.glb",
+    viewScale: 1.12,
+    viewOffset: [0.365, -0.32, 0.66],
+    viewEuler: [0.05, 0.135, -0.1],
+    viewGrip: [0.0, -0.065, 0.01],
+    viewHandguard: [0.0, 0.04, 0.36],
+    viewScope: [0.0, 0.085, 0.06],
+    groundScale: 1.02,
   },
 };
+
+loadWeaponModels();
+loadHandModels();
+loadBodyModels();
 
 let score = 0;
 let target = randomTarget();
 let lastTime = performance.now();
 let nearbyWeapons = [];
 let pickupAnimation = null;
+let dropAnimation = null;
 let inventory = [null, null];
 let activeSlot = 0;
 let isAiming = false;
+let adsProgress = 0;
 let adsZoom = 1;
 let mouseButtons = { left: false, right: false };
 let fireCooldown = 0;
@@ -167,11 +305,11 @@ const obstacles = createObstacles();
 const weaponPickups = createWeaponPickups(maxWeaponPickups);
 
 gl.enable(gl.DEPTH_TEST);
-gl.clearColor(0.52, 0.72, 0.95, 1);
+gl.clearColor(0.38, 0.62, 0.92, 1);
 
 window.addEventListener("resize", resize);
 window.addEventListener("keydown", (event) => {
-  if (event.code === "Space" || event.code === "KeyF" || event.code === "KeyE" || event.code === "Digit1" || event.code === "Digit2") {
+  if (event.code === "Space" || event.code === "KeyF" || event.code === "KeyE" || event.code === "KeyC" || event.code === "KeyO" || event.code === "Digit1" || event.code === "Digit2") {
     event.preventDefault();
   }
 
@@ -181,6 +319,26 @@ window.addEventListener("keydown", (event) => {
 
   if (event.code === "KeyE" && !event.repeat) {
     handleEKey();
+  }
+
+  if (event.code === "KeyC" && !event.repeat) {
+    if (godView) {
+      godView = false;
+      isAiming = false;
+      adsProgress = 0;
+    } else {
+      cycleCameraMode();
+    }
+  }
+
+  if (event.code === "KeyO" && !event.repeat) {
+    if (godView) {
+      godView = false;
+    } else {
+      enterGodView();
+    }
+    isAiming = false;
+    adsProgress = 0;
   }
 
   if ((event.code === "Digit1" || event.code === "Numpad1") && !event.repeat) {
@@ -205,6 +363,7 @@ canvas.addEventListener("mousedown", (event) => {
 
   if (event.button === 0) {
     mouseButtons.left = true;
+    if (godView) return;
     if (getEquippedWeapon() && !pickupAnimation && !weaponSwitch && fireCooldown <= 0) {
       fireWeapon();
     } else if (!getEquippedWeapon() && !pickupAnimation && !weaponSwitch) {
@@ -215,8 +374,8 @@ canvas.addEventListener("mousedown", (event) => {
   if (event.button === 2) {
     event.preventDefault();
     mouseButtons.right = true;
-    if (getEquippedWeapon()) {
-      isAiming = true;
+    if (getEquippedWeapon() && !isViewmodelBlocked()) {
+      isAiming = isFirstPerson();
     }
   }
 });
@@ -237,7 +396,13 @@ canvas.addEventListener("contextmenu", (event) => event.preventDefault());
 document.addEventListener("mousemove", (event) => {
   if (document.pointerLockElement !== canvas) return;
 
-  const sensitivity = (isAiming ? 0.00115 / adsZoom : 0.0022) * (player.isSprinting && !isAiming ? 1.05 : 1);
+  const sensitivity = (0.0022 + (0.00115 / adsZoom - 0.0022) * getAdsBlend()) * (player.isSprinting && !isAiming ? 1.05 : 1);
+  if (godView) {
+    godCamera.yaw -= event.movementX * sensitivity;
+    godCamera.pitch -= event.movementY * sensitivity;
+    godCamera.pitch = clamp(godCamera.pitch, -1.45, 1.45);
+    return;
+  }
   player.yaw -= event.movementX * sensitivity;
   player.pitch -= event.movementY * sensitivity;
   player.pitch = clamp(player.pitch, -1.35, 1.35);
@@ -245,24 +410,17 @@ document.addEventListener("mousemove", (event) => {
 
 document.addEventListener("wheel", (event) => {
   if (document.pointerLockElement !== canvas) return;
-  if (!isAiming || !getEquippedWeapon()) return;
+  if (!isFirstPerson() || !isAiming || !getEquippedWeapon()) return;
   event.preventDefault();
   adsZoom = clamp(adsZoom - Math.sign(event.deltaY) * 0.14, 1, 2.6);
 }, { passive: false });
 
 document.addEventListener("pointerlockchange", () => {
-  const locked = document.pointerLockElement === canvas;
-  startEl.classList.toggle("hidden", locked);
-  startButton.textContent = locked ? "Start" : "Resume";
-  if (locked) {
+  if (document.pointerLockElement === canvas) {
     unlockAudio();
   }
 });
 
-startButton.addEventListener("click", () => {
-  unlockAudio();
-  canvas.requestPointerLock();
-});
 canvas.addEventListener("click", () => {
   unlockAudio();
   canvas.requestPointerLock();
@@ -284,43 +442,51 @@ function loop(now) {
 }
 
 function update(deltaSeconds) {
-  const forward = [Math.sin(player.yaw), 0, Math.cos(player.yaw)];
-  const right = [Math.cos(player.yaw), 0, -Math.sin(player.yaw)];
-  const movement = [0, 0, 0];
+  if (godView) {
+    updateGodCamera(deltaSeconds);
+    player.isMoving = false;
+    player.isSprinting = false;
+  } else {
+    const forward = [Math.sin(player.yaw), 0, Math.cos(player.yaw)];
+    const right = [Math.cos(player.yaw), 0, -Math.sin(player.yaw)];
+    const movement = [0, 0, 0];
 
-  if (keys.has("KeyW")) addTo(movement, forward);
-  if (keys.has("KeyS")) subtractFrom(movement, forward);
-  if (keys.has("KeyA")) addTo(movement, right);
-  if (keys.has("KeyD")) subtractFrom(movement, right);
+    if (keys.has("KeyW")) addTo(movement, forward);
+    if (keys.has("KeyS")) subtractFrom(movement, forward);
+    if (keys.has("KeyA")) addTo(movement, right);
+    if (keys.has("KeyD")) subtractFrom(movement, right);
 
-  player.isMoving = length(movement) > 0;
-  player.isSprinting = player.isMoving && (keys.has("ShiftLeft") || keys.has("ShiftRight"));
+    player.isMoving = length(movement) > 0;
+    player.isSprinting = player.isMoving && (keys.has("ShiftLeft") || keys.has("ShiftRight"));
 
-  if (player.isMoving) {
-    const speed = player.isSprinting ? player.speed * player.sprintMultiplier : player.speed;
+    if (player.isMoving) {
+      const speed = player.isSprinting ? player.speed * player.sprintMultiplier : player.speed;
 
-    normalize(movement);
-    const deltaX = movement[0] * speed * deltaSeconds;
-    const deltaZ = movement[2] * speed * deltaSeconds;
-    const nextX = player.position[0] + deltaX;
+      normalize(movement);
+      const deltaX = movement[0] * speed * deltaSeconds;
+      const deltaZ = movement[2] * speed * deltaSeconds;
+      const nextX = player.position[0] + deltaX;
 
-    if (!movementBlocked(nextX, player.position[2], player.position[0], player.position[2])) {
-      player.position[0] = nextX;
-    }
+      if (!movementBlocked(nextX, player.position[2], player.position[0], player.position[2])) {
+        player.position[0] = nextX;
+      }
 
-    const nextZ = player.position[2] + deltaZ;
-    if (!movementBlocked(player.position[0], nextZ, player.position[0], player.position[2])) {
-      player.position[2] = nextZ;
+      const nextZ = player.position[2] + deltaZ;
+      if (!movementBlocked(player.position[0], nextZ, player.position[0], player.position[2])) {
+        player.position[2] = nextZ;
+      }
     }
   }
 
-  resolveViewmodelOverlap();
+  if (!godView) {
+    resolveViewmodelOverlap();
+  }
 
   const targetHandSway = player.isMoving ? 1 : 0;
   player.handSway += (targetHandSway - player.handSway) * Math.min(deltaSeconds * 8, 1);
   player.handCycle += deltaSeconds * (player.isMoving ? (player.isSprinting ? 13 : 9) : 2.2);
 
-  if (keys.has("Space") && player.onGround) {
+  if (!godView && keys.has("Space") && player.onGround) {
     player.verticalVelocity = jumpVelocity;
     player.onGround = false;
   }
@@ -343,10 +509,12 @@ function update(deltaSeconds) {
   }
 
   updatePickupAnimation(deltaSeconds);
+  updateDropAnimation(deltaSeconds);
   updateWeaponSwitch(deltaSeconds);
   updateCombat(deltaSeconds);
   updatePunch(deltaSeconds);
   updateViewmodelPush(deltaSeconds);
+  updateAds(deltaSeconds);
   updateBullets(deltaSeconds);
   updateImpactSparks(deltaSeconds);
   updateBulletHoles(deltaSeconds);
@@ -360,6 +528,11 @@ function render() {
   const vertices = [];
 
   addGround(vertices);
+  addObstacleShadows(vertices);
+  addWeaponShadows(vertices);
+  if (!isFirstPerson()) {
+    addPlayerShadow(vertices);
+  }
 
   for (const obstacle of obstacles) {
     addBox(vertices, obstacle.position, obstacle.size, obstacle.color);
@@ -385,30 +558,36 @@ function render() {
 
   const aspect = canvas.width / canvas.height;
   const equipped = getEquippedWeapon();
-  const fovDegrees = isAiming && equipped
+  const firstPerson = isFirstPerson();
+  const adsT = firstPerson ? getAdsBlend() : 0;
+  const hipFov = firstPerson ? 70 : 58;
+  const aimedFov = equipped
     ? clamp(WEAPON_DEFS[equipped.kind].adsFov / adsZoom, 18, WEAPON_DEFS[equipped.kind].adsFov)
-    : 70;
-  const projection = perspective((fovDegrees * Math.PI) / 180, aspect, 0.1, 220);
+    : hipFov;
+  const fovDegrees = hipFov + (aimedFov - hipFov) * adsT;
+  const projection = perspective((fovDegrees * Math.PI) / 180, aspect, firstPerson ? 0.1 : 0.18, 220);
   const lookDirection = getLookDirection();
   const pickupProgress = getPickupProgress();
   const crouchAmount = Math.sin(pickupProgress * Math.PI) * 0.42;
-  const cameraPosition = [player.position[0], player.position[1] - crouchAmount, player.position[2]];
-  const view = lookAt(
-    cameraPosition,
-    [
-      cameraPosition[0] + lookDirection[0],
-      cameraPosition[1] + lookDirection[1],
-      cameraPosition[2] + lookDirection[2],
-    ],
-    [0, 1, 0],
-  );
+  const eyePosition = [player.position[0], player.position[1] - crouchAmount, player.position[2]];
+  const camera = getRenderCamera(eyePosition, lookDirection);
+  const cameraPosition = camera.position;
+  addSun(vertices, cameraPosition);
+  const view = lookAt(cameraPosition, camera.target, [0, 1, 0]);
 
-  addPickupBody(vertices, lookDirection, cameraPosition, pickupProgress);
+  if (!bodyModels.torso) {
+    addPickupBody(vertices, lookDirection, eyePosition, pickupProgress);
+  }
 
-  const hideWeaponView = isAiming && equipped && !pickupAnimation;
+  const hideWeaponView = firstPerson && getScopeOverlayBlend() > 0.92 && equipped && !pickupAnimation && !dropAnimation;
+  if (!firstPerson) {
+    addThirdPersonPalms(vertices, eyePosition);
+  }
   if (!hideWeaponView) {
-    addFirstPersonHands(vertices, lookDirection, cameraPosition);
-    addHeldWeapon(vertices, lookDirection, cameraPosition, pickupProgress, equipped);
+    if (firstPerson && !handModels.idle) {
+      addFirstPersonHands(vertices, lookDirection, eyePosition);
+    }
+    addHeldWeapon(vertices, lookDirection, eyePosition, getPickupProgress(), getActiveViewWeapon());
   }
 
   gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
@@ -424,6 +603,11 @@ function render() {
 
   gl.uniformMatrix4fv(viewProjectionLocation, false, multiply(projection, view));
   gl.drawArrays(gl.TRIANGLES, 0, vertices.length / 6);
+
+  const viewProjection = multiply(projection, view);
+  drawGltfBody(viewProjection, eyePosition, cameraPosition, lookDirection, !firstPerson);
+  drawGltfWeapons(viewProjection, cameraPosition, lookDirection, pickupProgress, equipped, hideWeaponView, eyePosition);
+  drawGltfHands(viewProjection, cameraPosition, lookDirection, hideWeaponView, eyePosition);
 }
 
 function resize() {
@@ -435,13 +619,1069 @@ function resize() {
 
 function addGround(vertices) {
   const size = 100;
-  const color = [0.45, 0.27, 0.12];
+  const color = sunLitColor([0.55, 0.34, 0.16], [0, 1, 0]);
   pushVertex(vertices, -size, 0, -size, color);
   pushVertex(vertices, size, 0, -size, color);
   pushVertex(vertices, size, 0, size, color);
   pushVertex(vertices, -size, 0, -size, color);
   pushVertex(vertices, size, 0, size, color);
   pushVertex(vertices, -size, 0, size, color);
+}
+
+function addSun(vertices, cameraPosition) {
+  const dist = 160;
+  const center = [
+    cameraPosition[0] + sunLightDir[0] * dist,
+    cameraPosition[1] + sunLightDir[1] * dist,
+    cameraPosition[2] + sunLightDir[2] * dist,
+  ];
+  const forward = sunLightDir;
+  let right = cross([0, 1, 0], forward);
+  if (Math.hypot(right[0], right[1], right[2]) < 0.1) {
+    right = cross([1, 0, 0], forward);
+  }
+  right = normalize(right);
+  const up = normalize(cross(forward, right));
+  const layers = [
+    { radius: 10, color: [1.0, 0.55, 0.18] },
+    { radius: 6.2, color: [1.0, 0.78, 0.32] },
+    { radius: 3.6, color: [1.0, 0.93, 0.55] },
+    { radius: 1.8, color: [1.0, 0.99, 0.9] },
+  ];
+  const segments = 28;
+  for (const layer of layers) {
+    const ring = [];
+    for (let i = 0; i < segments; i += 1) {
+      const ang = (i / segments) * Math.PI * 2;
+      const ca = Math.cos(ang) * layer.radius;
+      const sa = Math.sin(ang) * layer.radius;
+      ring.push([
+        center[0] + right[0] * ca + up[0] * sa,
+        center[1] + right[1] * ca + up[1] * sa,
+        center[2] + right[2] * ca + up[2] * sa,
+      ]);
+    }
+    for (let i = 0; i < segments; i += 1) {
+      pushVertex(vertices, ...center, layer.color);
+      pushVertex(vertices, ...ring[i], layer.color);
+      pushVertex(vertices, ...ring[(i + 1) % segments], layer.color);
+    }
+  }
+}
+
+function sunLitColor(color, normal) {
+  const ndotl = Math.max(dot(normal, sunLightDir), 0);
+  const wrap = 0.2 + 0.8 * ndotl;
+  return [
+    Math.min(color[0] * wrap * 1.12, 1),
+    Math.min(color[1] * wrap * 1.04, 1),
+    Math.min(color[2] * wrap * 0.92, 1),
+  ];
+}
+
+function projectPointToGround(point) {
+  const ly = Math.max(sunLightDir[1], 0.08);
+  const t = Math.max(point[1], 0.01) / ly;
+  return [point[0] - sunLightDir[0] * t, 0.03, point[2] - sunLightDir[2] * t];
+}
+
+function convexHullXZ(points) {
+  const unique = [];
+  for (const point of points) {
+    if (!unique.some((other) => Math.hypot(other[0] - point[0], other[2] - point[2]) < 0.002)) {
+      unique.push(point);
+    }
+  }
+  unique.sort((a, b) => a[0] - b[0] || a[2] - b[2]);
+  if (unique.length <= 2) return unique;
+
+  const cross2 = (origin, a, b) => (a[0] - origin[0]) * (b[2] - origin[2]) - (a[2] - origin[2]) * (b[0] - origin[0]);
+  const lower = [];
+  for (const point of unique) {
+    while (lower.length >= 2 && cross2(lower[lower.length - 2], lower[lower.length - 1], point) <= 0) lower.pop();
+    lower.push(point);
+  }
+  const upper = [];
+  for (let index = unique.length - 1; index >= 0; index -= 1) {
+    const point = unique[index];
+    while (upper.length >= 2 && cross2(upper[upper.length - 2], upper[upper.length - 1], point) <= 0) upper.pop();
+    upper.push(point);
+  }
+  lower.pop();
+  upper.pop();
+  return lower.concat(upper);
+}
+
+function addObstacleShadows(vertices) {
+  const color = [0.13, 0.07, 0.04];
+  for (const obstacle of obstacles) {
+    addProjectedBoxShadow(vertices, obstacle.position, obstacle.size, color);
+  }
+}
+
+function addProjectedBoxShadow(vertices, center, size, color) {
+  const [cx, cy, cz] = center;
+  const [sx, sy, sz] = size.map((value) => value / 2);
+  const corners = [];
+  for (const x of [cx - sx, cx + sx]) {
+    for (const y of [Math.max(cy - sy, 0.02), Math.max(cy + sy, 0.04)]) {
+      for (const z of [cz - sz, cz + sz]) {
+        corners.push(projectPointToGround([x, y, z]));
+      }
+    }
+  }
+  const hull = convexHullXZ(corners);
+  if (hull.length < 3) return;
+  addPolygonFace(vertices, hull, color);
+}
+
+function addWeaponShadows(vertices) {
+  const color = [0.15, 0.08, 0.04];
+  for (const weapon of weaponPickups) {
+    const def = WEAPON_DEFS[weapon.kind];
+    const length = (def.barrelZ + 0.32) * (def.groundScale || 1);
+    addProjectedBoxShadow(vertices, [weapon.position[0], 0.12, weapon.position[2]], [length, 0.14, 0.2], color);
+  }
+  if (isFirstPerson()) return;
+  const held = getActiveViewWeapon();
+  if (!held) return;
+  const origin = getEyePosition();
+  const look = getLookDirection();
+  const basis = makeViewBasis(look, origin);
+  const hold = getViewWeaponHold(held.kind);
+  const grip = toWorldPoint(basis, hold.position[0], hold.position[1], hold.position[2]);
+  addProjectedBoxShadow(
+    vertices,
+    [grip[0], Math.max(0.2, grip[1]), grip[2]],
+    [WEAPON_DEFS[held.kind].barrelZ * 0.7 + 0.2, 0.16, 0.18],
+    color,
+  );
+}
+
+function addPlayerShadow(vertices) {
+  const origin = getEyePosition();
+  addProjectedBoxShadow(vertices, [origin[0], 0.95, origin[2]], [0.7, 1.9, 0.55], [0.12, 0.06, 0.03]);
+}
+
+function rayHitsAabb(origin, dir, center, half, minT, maxT) {
+  return rayAabbT(origin, dir, center, half, minT, maxT) != null;
+}
+
+function rayAabbT(origin, dir, center, half, minT, maxT) {
+  let tmin = minT;
+  let tmax = maxT;
+  for (let axis = 0; axis < 3; axis += 1) {
+    const delta = dir[axis];
+    const inv = Math.abs(delta) < 1e-8 ? 1e8 : 1 / delta;
+    const t0 = (center[axis] - half[axis] - origin[axis]) * inv;
+    const t1 = (center[axis] + half[axis] - origin[axis]) * inv;
+    tmin = Math.max(tmin, Math.min(t0, t1));
+    tmax = Math.min(tmax, Math.max(t0, t1));
+    if (tmax < tmin) return null;
+  }
+  return tmax >= tmin ? tmin : null;
+}
+
+function sunShadowFactor(origin) {
+  const start = [
+    origin[0] + sunLightDir[0] * 0.12,
+    origin[1] + sunLightDir[1] * 0.12,
+    origin[2] + sunLightDir[2] * 0.12,
+  ];
+  for (const obstacle of obstacles) {
+    const half = obstacle.size.map((value) => value / 2);
+    if (rayHitsAabb(start, sunLightDir, obstacle.position, half, 0, 80)) {
+      return 0.22;
+    }
+  }
+  return 1;
+}
+
+function isFirstPerson() {
+  return !godView && CAMERA_MODES[cameraModeIndex] === "first";
+}
+
+function cycleCameraMode() {
+  godView = false;
+  cameraModeIndex = (cameraModeIndex + 1) % CAMERA_MODES.length;
+  isAiming = false;
+  adsProgress = 0;
+}
+
+function getGodLook() {
+  return [
+    Math.sin(godCamera.yaw) * Math.cos(godCamera.pitch),
+    Math.sin(godCamera.pitch),
+    Math.cos(godCamera.yaw) * Math.cos(godCamera.pitch),
+  ];
+}
+
+function enterGodView() {
+  const eye = getEyePosition();
+  const look = getLookDirection();
+  const cam = getRenderCamera(eye, look);
+  const dx = cam.target[0] - cam.position[0];
+  const dy = cam.target[1] - cam.position[1];
+  const dz = cam.target[2] - cam.position[2];
+  const horiz = Math.hypot(dx, dz) || 1;
+  godCamera.position = [
+    cam.position[0],
+    Math.max(2.4, cam.position[1] + (isFirstPerson() ? 2.8 : 1.1)),
+    cam.position[2],
+  ];
+  godCamera.yaw = Math.atan2(dx, dz);
+  godCamera.pitch = clamp(Math.atan2(dy, horiz) - (isFirstPerson() ? 0.42 : 0.12), -1.45, 1.45);
+  godView = true;
+}
+
+function updateGodCamera(deltaSeconds) {
+  const look = getGodLook();
+  const right = [Math.cos(godCamera.yaw), 0, -Math.sin(godCamera.yaw)];
+  const movement = [0, 0, 0];
+  if (keys.has("KeyW")) addTo(movement, look);
+  if (keys.has("KeyS")) subtractFrom(movement, look);
+  if (keys.has("KeyA")) addTo(movement, right);
+  if (keys.has("KeyD")) subtractFrom(movement, right);
+  if (keys.has("Space")) movement[1] += 1;
+  if (keys.has("ControlLeft") || keys.has("ControlRight")) movement[1] -= 1;
+  if (length(movement) <= 0) return;
+  normalize(movement);
+  const speed = keys.has("ShiftLeft") || keys.has("ShiftRight") ? 32 : 16;
+  godCamera.position[0] += movement[0] * speed * deltaSeconds;
+  godCamera.position[1] = clamp(godCamera.position[1] + movement[1] * speed * deltaSeconds, 0.45, 80);
+  godCamera.position[2] += movement[2] * speed * deltaSeconds;
+}
+
+function getEyePosition() {
+  const crouchAmount = Math.sin(getPickupProgress() * Math.PI) * 0.42;
+  return [player.position[0], player.position[1] - crouchAmount, player.position[2]];
+}
+
+function fitCamera(from, desired) {
+  const delta = [desired[0] - from[0], desired[1] - from[1], desired[2] - from[2]];
+  const dist = Math.hypot(delta[0], delta[1], delta[2]) || 0.001;
+  const dir = [delta[0] / dist, delta[1] / dist, delta[2] / dist];
+  let hitT = dist;
+  for (const obstacle of obstacles) {
+    const half = obstacle.size.map((value) => value / 2);
+    const t = rayAabbT(from, dir, obstacle.position, half, 0.2, hitT);
+    if (t != null) hitT = Math.min(hitT, t);
+  }
+  const pulled = Math.max(0.55, hitT - 0.22);
+  return [from[0] + dir[0] * pulled, from[1] + dir[1] * pulled, from[2] + dir[2] * pulled];
+}
+
+function getRenderCamera(eyePosition, lookDirection) {
+  if (godView) {
+    const look = getGodLook();
+    return {
+      position: godCamera.position,
+      target: [
+        godCamera.position[0] + look[0],
+        godCamera.position[1] + look[1],
+        godCamera.position[2] + look[2],
+      ],
+    };
+  }
+
+  const chest = [eyePosition[0], eyePosition[1] - 0.42, eyePosition[2]];
+  const mode = CAMERA_MODES[cameraModeIndex];
+  if (mode === "first") {
+    return {
+      position: eyePosition,
+      target: [
+        eyePosition[0] + lookDirection[0],
+        eyePosition[1] + lookDirection[1],
+        eyePosition[2] + lookDirection[2],
+      ],
+    };
+  }
+
+  const forward = [Math.sin(player.yaw), 0, Math.cos(player.yaw)];
+  if (mode === "front") {
+    const dist = 3.05;
+    const desired = [
+      chest[0] + forward[0] * dist,
+      Math.max(0.6, chest[1] + 0.45 + player.pitch * 0.55),
+      chest[2] + forward[2] * dist,
+    ];
+    return { position: fitCamera(chest, desired), target: chest };
+  }
+
+  const dist = 3.35;
+  const desired = [
+    chest[0] - lookDirection[0] * dist,
+    Math.max(0.55, chest[1] - lookDirection[1] * dist + 0.72),
+    chest[2] - lookDirection[2] * dist,
+  ];
+  const target = [
+    chest[0] + lookDirection[0] * 1.4,
+    chest[1] + lookDirection[1] * 1.4 + 0.08,
+    chest[2] + lookDirection[2] * 1.4,
+  ];
+  return { position: fitCamera(chest, desired), target };
+}
+
+const BODY_HIP_Y = -0.96;
+const BODY_HIP_X = 0.125;
+const BODY_SHOULDER = [0.26, -0.32, 0.1];
+const ARM_UPPER_LENGTH = 0.3;
+const ARM_FORE_LENGTH = 0.28;
+const ARM_UPPER_MESH = 0.28;
+const ARM_FORE_MESH = 0.26;
+
+function loadBodyModels() {
+  return Promise.all(
+    ["torso", "leg", "head", "arm", "forearm"].map(async (part) => {
+      try {
+        bodyModels[part] = await Gltf.load(`models/player/${part}.glb?v=95`, gl);
+      } catch (error) {
+        console.warn(`Could not load body ${part}`, error);
+      }
+    }),
+  );
+}
+
+function getBodyWalk() {
+  const move = player.handSway;
+  const sprint = player.isSprinting ? 1 : 0;
+  const swing = Math.sin(player.handCycle) * (0.42 + sprint * 0.22) * move;
+  const bob = Math.abs(Math.sin(player.handCycle)) * (0.02 + sprint * 0.014) * move;
+  const breath = (1 - move) * Math.sin(player.handCycle * 0.8) * 0.008;
+  const jump = player.onGround ? 0 : clamp(-player.verticalVelocity * 0.01, -0.05, 0.07);
+  const pickup = pickupAnimation ? Math.sin(getPickupProgress() * Math.PI) : 0;
+  const lean = (player.isSprinting && player.isMoving ? 0.1 : 0.04) + pickup * 0.28;
+  return { swing, bob, breath, jump, pickup, lean };
+}
+
+function applyEulerPoint(x, y, z, pitch, yaw, roll) {
+  const matrix = eulerMatrix(pitch, yaw, roll);
+  return [
+    matrix[0] * x + matrix[4] * y + matrix[8] * z,
+    matrix[1] * x + matrix[5] * y + matrix[9] * z,
+    matrix[2] * x + matrix[6] * y + matrix[10] * z,
+  ];
+}
+
+function bodyWorldMatrix(origin, localX, localY, localZ, pitch, yaw, roll, sx, sy, sz) {
+  const offset = applyEulerPoint(localX, localY, localZ, pitch, yaw, roll);
+  return multiply(
+    translationMatrix(origin[0] + offset[0], origin[1] + offset[1], origin[2] + offset[2]),
+    multiply(eulerMatrix(pitch, yaw, roll), scaleMatrix3(sx, sy, sz)),
+  );
+}
+
+function aimMatrix(from, to, sx, restLength, radius = 1) {
+  const dx = to[0] - from[0];
+  const dy = to[1] - from[1];
+  const dz = to[2] - from[2];
+  const len = Math.hypot(dx, dy, dz) || 0.001;
+  const forward = [dx / len, dy / len, dz / len];
+  const helper = Math.abs(forward[1]) > 0.94 ? [1, 0, 0] : [0, 1, 0];
+  const right = cross(helper, forward);
+  const rightLen = Math.hypot(right[0], right[1], right[2]) || 1;
+  right[0] /= rightLen;
+  right[1] /= rightLen;
+  right[2] /= rightLen;
+  const up = cross(forward, right);
+  const stretch = Math.max(0.4, len / restLength);
+  const rx = sx * radius;
+  return new Float32Array([
+    right[0] * rx,
+    right[1] * rx,
+    right[2] * rx,
+    0,
+    up[0] * radius,
+    up[1] * radius,
+    up[2] * radius,
+    0,
+    forward[0] * stretch,
+    forward[1] * stretch,
+    forward[2] * stretch,
+    0,
+    from[0],
+    from[1],
+    from[2],
+    1,
+  ]);
+}
+
+function solveTwoBone(shoulder, wrist, pole, upperLen, foreLen) {
+  const dx = wrist[0] - shoulder[0];
+  const dy = wrist[1] - shoulder[1];
+  const dz = wrist[2] - shoulder[2];
+  const dist = Math.hypot(dx, dy, dz) || 0.001;
+  const dir = [dx / dist, dy / dist, dz / dist];
+  const maxReach = upperLen + foreLen;
+  const stretch = dist > maxReach - 0.004 ? dist / maxReach : 1;
+  const u = upperLen * stretch;
+  const f = foreLen * stretch;
+  const d = Math.min(dist, u + f - 0.004);
+  const minD = Math.abs(u - f) + 0.01;
+  const reach = Math.max(minD, d);
+  const along = clamp((u * u + reach * reach - f * f) / (2 * u * reach), -1, 1) * u;
+  const height = Math.sqrt(Math.max(0, u * u - along * along));
+  let poleDir = [pole[0] - shoulder[0], pole[1] - shoulder[1], pole[2] - shoulder[2]];
+  const poleAlong = poleDir[0] * dir[0] + poleDir[1] * dir[1] + poleDir[2] * dir[2];
+  poleDir = [poleDir[0] - dir[0] * poleAlong, poleDir[1] - dir[1] * poleAlong, poleDir[2] - dir[2] * poleAlong];
+  let poleLen = Math.hypot(poleDir[0], poleDir[1], poleDir[2]);
+  if (poleLen < 0.001) {
+    const helper = Math.abs(dir[1]) > 0.94 ? [1, 0, 0] : [0, 1, 0];
+    poleDir = cross(dir, helper);
+    poleLen = Math.hypot(poleDir[0], poleDir[1], poleDir[2]) || 1;
+  }
+  poleDir = [poleDir[0] / poleLen, poleDir[1] / poleLen, poleDir[2] / poleLen];
+  return [
+    shoulder[0] + dir[0] * along + poleDir[0] * height,
+    shoulder[1] + dir[1] * along + poleDir[1] * height,
+    shoulder[2] + dir[2] * along + poleDir[2] * height,
+  ];
+}
+
+function getViewHandScale(kind) {
+  if (!isFirstPerson()) return kind === "hold" ? 1.08 : 1.02;
+  return kind === "hold" ? 1.85 : 1.9;
+}
+
+function getHandWristLocal(pose) {
+  if (pose.hand === "fist") return [0, -0.02, -0.05];
+  if (pose.hand === "grip") return [0, 0.0, -0.05];
+  return [0, -0.02, -0.06];
+}
+
+function getArmAimEuler(side, palm) {
+  const shoulder = [-side * BODY_SHOULDER[0], BODY_SHOULDER[1], BODY_SHOULDER[2]];
+  const euler = viewLookEuler(shoulder, palm);
+  euler[2] = side * 0.4;
+  return euler;
+}
+
+function keepWeaponClearOfBody(hold) {
+  if (isFirstPerson()) return hold;
+  const probes = [
+    [0, 0.02, -0.4],
+    [0, -0.1, -0.12],
+    [0, 0.06, -0.22],
+    [0, 0, 0],
+  ];
+  let pushZ = Math.max(0, 0.82 - hold.position[2]);
+  for (const local of probes) {
+    const point = transformViewPoint(hold.position, hold.euler, hold.scale, local);
+    if (point[2] < 0.34) pushZ = Math.max(pushZ, 0.34 - point[2]);
+    if (point[1] > -0.08 && point[2] < 0.42) pushZ = Math.max(pushZ, 0.42 - point[2]);
+  }
+  return {
+    position: [hold.position[0], hold.position[1], hold.position[2] + pushZ],
+    euler: hold.euler,
+    scale: hold.scale,
+  };
+}
+
+function getThirdPersonArmPose(side, eyePosition) {
+  const { lean, breath, jump } = getBodyWalk();
+  const bodyYaw = player.yaw;
+  const origin = [eyePosition[0], eyePosition[1] + breath + jump, eyePosition[2]];
+  const viewLook = getViewmodelLook();
+  const basis = makeViewBasis(viewLook, eyePosition);
+  const viewRight = getViewRight();
+  const pose = getHandViewPose(side);
+  const palm = toWorldPoint(basis, pose.position[0], pose.position[1], pose.position[2]);
+  const shoulderOffset = applyEulerPoint(-side * BODY_SHOULDER[0], BODY_SHOULDER[1], BODY_SHOULDER[2], lean, bodyYaw, 0);
+  const shoulder = [origin[0] + shoulderOffset[0], origin[1] + shoulderOffset[1], origin[2] + shoulderOffset[2]];
+  const wristView = transformViewPoint(pose.position, pose.euler, pose.scale, getHandWristLocal(pose));
+  const wrist = toWorldPoint(basis, wristView[0], wristView[1], wristView[2]);
+  const towardShoulder = [
+    shoulder[0] - palm[0],
+    shoulder[1] - palm[1],
+    shoulder[2] - palm[2],
+  ];
+  const towardLen = Math.hypot(towardShoulder[0], towardShoulder[1], towardShoulder[2]) || 1;
+  const stub = 0.05 * pose.scale;
+  const join = [
+    palm[0] + towardShoulder[0] / towardLen * stub,
+    palm[1] + towardShoulder[1] / towardLen * stub,
+    palm[2] + towardShoulder[2] / towardLen * stub,
+  ];
+  const mixedJoin = mix3(wrist, join, 0.7);
+  const pole = [
+    shoulder[0] + viewRight[0] * side * 0.26 - viewLook[0] * 0.05,
+    shoulder[1] - 0.48,
+    shoulder[2] + viewRight[2] * side * 0.26 - viewLook[2] * 0.05,
+  ];
+  const elbow = solveTwoBone(shoulder, mixedJoin, pole, ARM_UPPER_LENGTH, ARM_FORE_LENGTH);
+  return { shoulder, elbow, wrist: mixedJoin, palm, side };
+}
+
+function addThirdPersonPalms(vertices, eyePosition) {
+  const skin = sunLitColor([0.9, 0.64, 0.5], [0, 1, 0]);
+  const palmTone = sunLitColor([0.84, 0.56, 0.44], [0, 0, 1]);
+  for (const side of [-1, 1]) {
+    const arm = getThirdPersonArmPose(side, eyePosition);
+    let forward = [
+      arm.palm[0] - arm.wrist[0],
+      arm.palm[1] - arm.wrist[1],
+      arm.palm[2] - arm.wrist[2],
+    ];
+    if (Math.hypot(forward[0], forward[1], forward[2]) < 0.018) {
+      forward = [
+        arm.wrist[0] - arm.elbow[0],
+        arm.wrist[1] - arm.elbow[1],
+        arm.wrist[2] - arm.elbow[2],
+      ];
+    }
+    forward = normalize(forward);
+    const helper = Math.abs(forward[1]) > 0.92 ? [1, 0, 0] : [0, 1, 0];
+    let right = cross(helper, forward);
+    const rightLen = Math.hypot(right[0], right[1], right[2]) || 1;
+    right = [right[0] / rightLen, right[1] / rightLen, right[2] / rightLen];
+    const up = normalize(cross(forward, right));
+    const basis = { origin: arm.wrist, forward, right, up };
+    addBeveledViewBox(vertices, basis, [0, 0, 0.012], [0.068, 0.052, 0.036], skin);
+    addBeveledViewBox(vertices, basis, [side * 0.006, 0.006, 0.058], [0.09, 0.028, 0.1], palmTone);
+  }
+}
+
+function drawGltfBody(viewProjection, eyePosition, cameraPosition, lookDirection, thirdPerson) {
+  if (!bodyModels.torso || !bodyModels.leg) return;
+
+  const { swing, bob, breath, jump, lean } = getBodyWalk();
+  const shadow = sunShadowFactor(eyePosition);
+  const bodyYaw = player.yaw;
+  const origin = [eyePosition[0], eyePosition[1] + breath + jump, eyePosition[2]];
+
+  gl.disable(gl.CULL_FACE);
+  drawGltfModel(
+    bodyModels.torso,
+    viewProjection,
+    bodyWorldMatrix(origin, 0, 0, 0.05, lean, bodyYaw, 0, 1, 1, 1),
+    cameraPosition,
+    sunLightDir,
+    1.45,
+    shadow,
+  );
+
+  if (thirdPerson && bodyModels.head) {
+    drawGltfModel(
+      bodyModels.head,
+      viewProjection,
+      bodyWorldMatrix(origin, 0, -0.02, 0.02, lean * 0.2 + clamp(player.pitch, -0.95, 0.75), bodyYaw, 0, 1, 1, 1),
+      cameraPosition,
+      sunLightDir,
+      1.45,
+      shadow,
+    );
+  }
+
+  if (thirdPerson && bodyModels.arm) {
+    for (const side of [-1, 1]) {
+      const arm = getThirdPersonArmPose(side, eyePosition);
+      const mirror = side < 0 ? -1 : 1;
+      if (side < 0) gl.frontFace(gl.CW);
+      drawGltfModel(
+        bodyModels.arm,
+        viewProjection,
+        aimMatrix(arm.shoulder, arm.elbow, mirror, ARM_UPPER_MESH, 0.94),
+        cameraPosition,
+        sunLightDir,
+        1.45,
+        shadow,
+      );
+      if (bodyModels.forearm) {
+        drawGltfModel(
+          bodyModels.forearm,
+          viewProjection,
+          aimMatrix(arm.elbow, arm.wrist, mirror, ARM_FORE_MESH, 0.88),
+          cameraPosition,
+          sunLightDir,
+          1.45,
+          shadow,
+        );
+      }
+      gl.frontFace(gl.CCW);
+    }
+  }
+
+  for (const side of [-1, 1]) {
+    const planted = Math.sin(player.handCycle + (side > 0 ? 0 : Math.PI)) > 0 ? 1 : 0.2;
+    const lift = bob * planted;
+    const hip = applyEulerPoint(side * BODY_HIP_X, BODY_HIP_Y + lift * 0.05, 0.08, lean, bodyYaw, 0);
+    if (side < 0) gl.frontFace(gl.CW);
+    drawGltfModel(
+      bodyModels.leg,
+      viewProjection,
+      multiply(
+        translationMatrix(origin[0] + hip[0], origin[1] + hip[1], origin[2] + hip[2]),
+        multiply(eulerMatrix(lean + side * swing, bodyYaw, side * 0.03), scaleMatrix3(side, 1, 1)),
+      ),
+      cameraPosition,
+    sunLightDir,
+    1.45,
+    shadow,
+    );
+    gl.frontFace(gl.CCW);
+  }
+}
+
+function loadHandModels() {
+  return Promise.all(
+    ["idle", "grip", "fist"].map(async (pose) => {
+      try {
+        handModels[pose] = await Gltf.load(`models/hands/hand_${pose}.glb?v=107`, gl);
+      } catch (error) {
+        console.warn(`Could not load hand ${pose}`, error);
+      }
+    }).concat([
+      (async () => {
+        try {
+          handModels.gripLeft = await Gltf.load("models/hands/hand_grip_left.glb?v=107", gl);
+        } catch (error) {
+          console.warn("Could not load hand grip_left", error);
+        }
+      })(),
+    ]),
+  );
+}
+
+function loadWeaponModels() {
+  return Promise.all(
+    Object.keys(WEAPON_DEFS).map(async (kind) => {
+      try {
+        weaponModels[kind] = await Gltf.load(WEAPON_DEFS[kind].model, gl);
+      } catch (error) {
+        console.warn(`Could not load ${WEAPON_DEFS[kind].model}`, error);
+      }
+    }),
+  );
+}
+
+function getActiveViewWeapon() {
+  return dropAnimation?.weapon || pickupAnimation?.weapon || getEquippedWeapon();
+}
+
+function getHoldBlend() {
+  if (pickupAnimation) {
+    return easeInOut(clamp((pickupAnimation.elapsed / pickupAnimation.duration - 0.08) / 0.82, 0, 1));
+  }
+  if (dropAnimation) {
+    return 1 - easeInOut(clamp(dropAnimation.elapsed / dropAnimation.duration, 0, 1));
+  }
+  return getEquippedWeapon() ? 1 : 0;
+}
+
+function getHeldWeaponTransform(kind, holdProgress, bob, sway, ads) {
+  const hip = getHipHeldTransform(kind, holdProgress, bob, sway);
+  const shift = getAdsShift(kind, holdProgress, bob, sway);
+  const position = [hip.position[0] + shift[0], hip.position[1] + shift[1], hip.position[2] + shift[2]];
+  const hold = { position, euler: hip.euler, scale: hip.scale };
+  if (isFirstPerson()) return hold;
+  const t = holdProgress;
+  return keepWeaponClearOfBody({
+    position: mix3(position, [0.04, -0.26, 0.58], t),
+    euler: mix3(hip.euler, [0, 0, 0], t),
+    scale: hip.scale,
+  });
+}
+
+function getWeaponContact(kind, holdProgress, bob, sway, ads, side) {
+  const def = WEAPON_DEFS[kind];
+  const hold = getHeldWeaponTransform(kind, holdProgress, bob, sway, ads);
+  const local = side > 0
+    ? isFirstPerson()
+      ? [
+          (def.viewGrip?.[0] || 0) + 0.07,
+          (def.viewGrip?.[1] || -0.07) - 0.08,
+          def.viewGrip?.[2] || 0.02,
+        ]
+      : [
+          (def.viewGrip?.[0] || 0) + 0.012,
+          (def.viewGrip?.[1] || -0.07) - 0.002,
+          (def.viewGrip?.[2] || 0.02) + 0.004,
+        ]
+    : [
+        (def.viewHandguard?.[0] || 0) - 0.02,
+        (def.viewHandguard?.[1] || 0.04) - 0.05,
+        def.viewHandguard?.[2] || 0.38,
+      ];
+  const grip = transformViewPoint(hold.position, hold.euler, hold.scale, local);
+  if (!isFirstPerson()) {
+    const handEuler = getArmAimEuler(side, grip);
+    const wrap = transformViewPoint([0, 0, 0], handEuler, getViewHandScale("hold"), [0, 0.002, 0.012]);
+    return [grip[0] - wrap[0], grip[1] - wrap[1], grip[2] - wrap[2]];
+  }
+  return grip;
+}
+
+function getHipHeldTransform(kind, holdProgress, bob, sway) {
+  const def = WEAPON_DEFS[kind];
+  const rest = def.viewOffset || [0.28, -0.27, 0.55];
+  const restEuler = def.viewEuler || [0.05, 0.14, -0.1];
+  const grab = [rest[0] * 0.35, rest[1] - 0.62, rest[2] + 0.32];
+  const grabEuler = [0.62, -0.16, -0.28];
+  const t = holdProgress;
+  const position = offsetForAds(
+    grab[0] + (rest[0] - grab[0]) * t + sway,
+    grab[1] + (rest[1] - grab[1]) * t + bob,
+    grab[2] + (rest[2] - grab[2]) * t,
+    0,
+  );
+  return {
+    position,
+    euler: [
+      grabEuler[0] + (restEuler[0] - grabEuler[0]) * t,
+      grabEuler[1] + (restEuler[1] - grabEuler[1]) * t,
+      grabEuler[2] + (restEuler[2] - grabEuler[2]) * t,
+    ],
+    scale: def.viewScale || 0.72,
+  };
+}
+
+function getAdsShift(kind, holdProgress, bob, sway) {
+  const adsT = getAdsBlend() * holdProgress;
+  if (adsT <= 0.001) return [0, 0, 0];
+  const hip = getHipHeldTransform(kind, holdProgress, bob, sway);
+  const scopeLocal = WEAPON_DEFS[kind].viewScope || [0, 0.1, 0.06];
+  const scope = transformViewPoint(hip.position, hip.euler, hip.scale, scopeLocal);
+  const target = [0, 0, 0.5];
+  return [
+    (target[0] - scope[0]) * adsT,
+    (target[1] - scope[1]) * adsT,
+    (target[2] - scope[2]) * adsT,
+  ];
+}
+
+function basisToWorldMatrix(basis) {
+  return new Float32Array([
+    basis.right[0],
+    basis.right[1],
+    basis.right[2],
+    0,
+    basis.up[0],
+    basis.up[1],
+    basis.up[2],
+    0,
+    basis.forward[0],
+    basis.forward[1],
+    basis.forward[2],
+    0,
+    basis.origin[0],
+    basis.origin[1],
+    basis.origin[2],
+    1,
+  ]);
+}
+
+function translationMatrix(x, y, z) {
+  return new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x, y, z, 1]);
+}
+
+function scaleMatrix(scale) {
+  return scaleMatrix3(scale, scale, scale);
+}
+
+function scaleMatrix3(sx, sy, sz) {
+  return new Float32Array([sx, 0, 0, 0, 0, sy, 0, 0, 0, 0, sz, 0, 0, 0, 0, 1]);
+}
+
+function eulerMatrix(pitch, yaw, roll) {
+  const cx = Math.cos(pitch);
+  const sx = Math.sin(pitch);
+  const cy = Math.cos(yaw);
+  const sy = Math.sin(yaw);
+  const cz = Math.cos(roll);
+  const sz = Math.sin(roll);
+  const rx = new Float32Array([1, 0, 0, 0, 0, cx, sx, 0, 0, -sx, cx, 0, 0, 0, 0, 1]);
+  const ry = new Float32Array([cy, 0, -sy, 0, 0, 1, 0, 0, sy, 0, cy, 0, 0, 0, 0, 1]);
+  const rz = new Float32Array([cz, sz, 0, 0, -sz, cz, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]);
+  return multiply(ry, multiply(rx, rz));
+}
+
+function makeViewModelMatrix(basis, position, euler, scale) {
+  return makeViewModelMatrix3(basis, position, euler, scale, scale, scale);
+}
+
+function makeViewModelMatrix3(basis, position, euler, sx, sy, sz) {
+  const local = multiply(
+    translationMatrix(position[0], position[1], position[2]),
+    multiply(eulerMatrix(euler[0], euler[1], euler[2]), scaleMatrix3(sx, sy, sz)),
+  );
+  return multiply(basisToWorldMatrix(basis), local);
+}
+
+function transformViewPoint(position, euler, scale, local) {
+  const matrix = multiply(
+    translationMatrix(position[0], position[1], position[2]),
+    multiply(eulerMatrix(euler[0], euler[1], euler[2]), scaleMatrix(scale)),
+  );
+  return [
+    matrix[0] * local[0] + matrix[4] * local[1] + matrix[8] * local[2] + matrix[12],
+    matrix[1] * local[0] + matrix[5] * local[1] + matrix[9] * local[2] + matrix[13],
+    matrix[2] * local[0] + matrix[6] * local[1] + matrix[10] * local[2] + matrix[14],
+  ];
+}
+
+function groundWeaponMatrix(weapon) {
+  const yaw = weapon.heading >= 0 ? Math.PI / 2 : -Math.PI / 2;
+  const cy = Math.cos(yaw);
+  const sy = Math.sin(yaw);
+  const scale = WEAPON_DEFS[weapon.kind].groundScale || 1;
+  return new Float32Array([
+    cy * scale,
+    0,
+    -sy * scale,
+    0,
+    0,
+    scale,
+    0,
+    0,
+    sy * scale,
+    0,
+    cy * scale,
+    0,
+    weapon.position[0],
+    0.14,
+    weapon.position[2],
+    1,
+  ]);
+}
+
+function drawGltfModel(model, viewProjection, world, cameraPosition, lightDir, exposure, shadow = 1) {
+  gl.useProgram(pbrProgram);
+  gl.uniform3fv(pbr.cameraPos, cameraPosition);
+  gl.uniform3fv(pbr.lightDir, lightDir);
+  gl.uniform3fv(pbr.lightColor, [1.38, 1.24, 0.98]);
+  gl.uniform1f(pbr.shadow, shadow);
+  gl.uniform1f(pbr.exposure, exposure);
+  gl.uniform1i(pbr.baseColor, 0);
+  gl.uniform1i(pbr.metallicRoughness, 1);
+  gl.uniform1i(pbr.normalMap, 2);
+
+  gl.enableVertexAttribArray(pbr.position);
+  gl.enableVertexAttribArray(pbr.normal);
+  gl.enableVertexAttribArray(pbr.uv);
+  gl.enableVertexAttribArray(pbr.tangent);
+
+  for (const primitive of model.primitives) {
+    const combined = Gltf.multiply4(world, primitive.world);
+    gl.uniformMatrix4fv(pbr.mvp, false, multiply(viewProjection, combined));
+    gl.uniformMatrix4fv(pbr.model, false, combined);
+    gl.uniform4fv(pbr.baseColorFactor, primitive.baseColorFactor);
+    gl.uniform1f(pbr.metallicFactor, primitive.metallicFactor);
+    gl.uniform1f(pbr.roughnessFactor, primitive.roughnessFactor);
+
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, primitive.baseMap);
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, primitive.mrMap);
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, primitive.normalMap);
+
+    gl.bindBuffer(gl.ARRAY_BUFFER, primitive.vbo);
+    const stride = primitive.stride;
+    gl.vertexAttribPointer(pbr.position, 3, gl.FLOAT, false, stride, 0);
+    gl.vertexAttribPointer(pbr.normal, 3, gl.FLOAT, false, stride, 12);
+    gl.vertexAttribPointer(pbr.uv, 2, gl.FLOAT, false, stride, 24);
+    gl.vertexAttribPointer(pbr.tangent, 4, gl.FLOAT, false, stride, 32);
+
+    if (primitive.ibo) {
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, primitive.ibo);
+      gl.drawElements(gl.TRIANGLES, primitive.count, primitive.indexType, 0);
+    } else {
+      gl.drawArrays(gl.TRIANGLES, 0, primitive.count);
+    }
+  }
+}
+
+function drawGltfWeapons(viewProjection, cameraPosition, lookDirection, pickupProgress, equipped, hideWeaponView, eyePosition) {
+  gl.enable(gl.CULL_FACE);
+  gl.cullFace(gl.BACK);
+
+  for (const weapon of weaponPickups) {
+    const model = weaponModels[weapon.kind];
+    if (!model) continue;
+    drawGltfModel(
+      model,
+      viewProjection,
+      groundWeaponMatrix(weapon),
+      cameraPosition,
+      sunLightDir,
+      1.05,
+      sunShadowFactor([weapon.position[0], 0.4, weapon.position[2]]),
+    );
+  }
+
+  const activeWeapon = getActiveViewWeapon();
+  if (!hideWeaponView && activeWeapon && weaponModels[activeWeapon.kind]) {
+    const basis = makeViewBasis(getViewmodelLook(), eyePosition);
+    const hold = getViewWeaponHold(activeWeapon.kind);
+    drawGltfModel(
+      weaponModels[activeWeapon.kind],
+      viewProjection,
+      makeViewModelMatrix(basis, hold.position, hold.euler, hold.scale),
+      cameraPosition,
+      sunLightDir,
+      1.22,
+      sunShadowFactor(eyePosition),
+    );
+  }
+
+  gl.disable(gl.CULL_FACE);
+}
+
+function keepViewOutsideBody(point) {
+  if (isFirstPerson()) return point;
+  let x = point[0];
+  let y = point[1];
+  let z = point[2];
+  const holding = getHoldBlend() > 0.35 && getActiveViewWeapon() && !punchAnimation;
+  const inChest = y < -0.08 && y > -0.9 && Math.abs(x) < 0.28 && z < 0.3;
+  if (inChest) {
+    z = holding ? 0.72 : 0.32;
+    if (!holding && Math.abs(x) < 0.24) x = Math.sign(x || 1) * 0.24;
+  }
+  return [x, y, Math.max(z, holding ? 0.7 : 0.22)];
+}
+
+function getViewWeaponHold(kind) {
+  if (isViewmodelBlocked() && !punchAnimation) {
+    return getBlockedWeaponHold(kind);
+  }
+  const holdProgress = getHoldBlend();
+  const { bob, sway, ads } = getHeldSway(holdProgress);
+  const hold = getHeldWeaponTransform(kind, holdProgress, bob, sway, ads);
+  const position = keepViewOutsideBody(hold.position);
+  return { position, euler: hold.euler, scale: hold.scale };
+}
+
+function getBlockedWeaponHold(kind) {
+  const def = WEAPON_DEFS[kind];
+  const pose = getHangPose(1);
+  return {
+    position: keepViewOutsideBody([pose.position[0] - 0.04, pose.position[1] + 0.02, pose.position[2] + 0.04]),
+    euler: [1.12, 0.08, 0.42],
+    scale: def.viewScale || 1,
+  };
+}
+
+function getHangPose(side) {
+  return {
+    position: [side * 0.22, -0.78, 0.15],
+    euler: [1.22, side * 0.05, side * 0.16],
+    scale: 1.9,
+    hand: "idle",
+  };
+}
+
+function isViewmodelBlocked() {
+  return player.viewmodelPush > 0.34 || Math.abs(player.viewmodelSidePush) > 0.48;
+}
+
+function viewLookEuler(from, to) {
+  const dx = to[0] - from[0];
+  const dy = to[1] - from[1];
+  const dz = to[2] - from[2];
+  const horiz = Math.hypot(dx, dz) || 0.0001;
+  return [Math.atan2(dy, horiz), Math.atan2(dx, dz), 0];
+}
+
+function getHandViewPose(side) {
+  const phase = player.handCycle + (side > 0 ? Math.PI : 0);
+  const moveAmount = player.handSway;
+  const sprintAmount = player.isSprinting ? 1 : 0;
+  const idleBreath = (1 - moveAmount) * Math.sin(player.handCycle * 0.8) * 0.008;
+  const walkBob = Math.abs(Math.sin(phase)) * (0.014 + sprintAmount * 0.01) * moveAmount;
+  const lateralSway = Math.cos(phase) * (0.01 + sprintAmount * 0.008) * moveAmount;
+  const forwardSway = Math.sin(phase) * (0.012 + sprintAmount * 0.01) * moveAmount;
+  const jumpLag = player.onGround ? 0 : clamp(-player.verticalVelocity * 0.008, -0.04, 0.04);
+  const pickupReach = pickupAnimation
+    ? Math.sin(getPickupProgress() * Math.PI)
+    : dropAnimation
+      ? Math.sin(getHoldBlend() * Math.PI) * 0.35
+      : 0;
+  const holdBlend = getHoldBlend();
+  const { bob, sway: gunSway, ads } = getHeldSway(holdBlend);
+  const viewWeapon = getActiveViewWeapon();
+  const dip = getSwitchDip();
+  const push = player.viewmodelPush;
+  const sidePush = player.viewmodelSidePush;
+
+  const idlePos = [
+    side * 0.3 + side * lateralSway + dip * side * 0.04 - sidePush * 0.35,
+    -0.26 + idleBreath - walkBob + jumpLag - pickupReach * 0.1 - dip * 0.35 - push * 0.06,
+    0.58 + forwardSway + pickupReach * 0.12 - dip * 0.14 - push * 0.24 - Math.abs(sidePush) * 0.24,
+  ];
+  const idleEuler = [0.05, side * 0.03, 0];
+
+  if (punchAnimation) {
+    const joints = getPunchJoints(side, side === punchAnimation.side);
+    const euler = viewLookEuler(joints.wrist, joints.hand);
+    euler[2] = side * 0.18;
+    return {
+      position: keepViewOutsideBody(mix3(joints.wrist, joints.hand, isFirstPerson() ? 0.55 : 0.35)),
+      euler,
+      scale: getViewHandScale("idle"),
+      hand: "fist",
+    };
+  }
+
+  if (isViewmodelBlocked()) {
+    const hang = getHangPose(side);
+    return {
+      position: keepViewOutsideBody(hang.position),
+      euler: hang.euler,
+      scale: getViewHandScale("idle"),
+      hand: "idle",
+    };
+  }
+
+  if (viewWeapon && holdBlend > 0.02) {
+    const target = getWeaponContact(viewWeapon.kind, holdBlend, bob, gunSway, ads, side);
+    const holdEuler = isFirstPerson()
+      ? (side < 0 ? [0.18, 0.14, -0.55] : [0.18, -0.08, 0.55])
+      : getArmAimEuler(side, target);
+    const gripping = holdBlend > 0.35;
+    return {
+      position: keepViewOutsideBody(mix3(idlePos, target, holdBlend)),
+      euler: mix3(idleEuler, holdEuler, holdBlend),
+      scale: getViewHandScale("hold"),
+      hand: gripping ? "grip" : "idle",
+    };
+  }
+
+  return {
+    position: keepViewOutsideBody(idlePos),
+    euler: idleEuler,
+    scale: getViewHandScale("idle"),
+    hand: "idle",
+  };
+}
+
+function drawGltfHands(viewProjection, cameraPosition, lookDirection, hideWeaponView, eyePosition) {
+  if (!isFirstPerson() || hideWeaponView || !handModels.idle) return;
+
+  const basis = makeViewBasis(getViewmodelLook(), eyePosition);
+  const holdBlend = getHoldBlend();
+  const sides = punchAnimation || holdBlend < 0.4 || isViewmodelBlocked() ? [-1, 1] : [-1];
+
+  gl.disable(gl.CULL_FACE);
+
+  for (const side of sides) {
+    const pose = getHandViewPose(side);
+    const model = pose.hand === "grip" && side < 0
+      ? (handModels.gripLeft || handModels.grip)
+      : (handModels[pose.hand] || handModels.idle);
+    const sx = (side < 0 ? -1 : 1) * pose.scale;
+    if (side < 0) gl.frontFace(gl.CW);
+    drawGltfModel(
+      model,
+      viewProjection,
+      makeViewModelMatrix3(basis, pose.position, pose.euler, sx, pose.scale, pose.scale),
+      cameraPosition,
+      sunLightDir,
+      1.42,
+      sunShadowFactor(eyePosition),
+    );
+    gl.frontFace(gl.CCW);
+  }
 }
 
 function createWeaponPickups(limit) {
@@ -480,31 +1720,62 @@ function getInventoryCount() {
 
 function dropActiveWeapon(options = {}) {
   const weapon = getEquippedWeapon();
-  if (!weapon || pickupAnimation) return false;
+  if (!weapon || pickupAnimation || dropAnimation) return false;
 
+  isAiming = false;
+  adsZoom = 1;
   const forward = [Math.sin(player.yaw), 0, Math.cos(player.yaw)];
-  weaponPickups.push({
-    ...weapon,
-    id: `${weapon.kind}-${Date.now()}`,
-    position: [
+  dropAnimation = {
+    weapon,
+    elapsed: 0,
+    duration: 0.46,
+    keepSlot: Boolean(options.keepSlot),
+    thenPickup: options.thenPickup || null,
+    landPosition: [
       player.position[0] + forward[0] * 1.4,
       0,
       player.position[2] + forward[2] * 1.4,
     ],
     heading: forward[0] >= 0 ? 1 : -1,
-  });
-
-  inventory[activeSlot] = null;
-
-  if (!options.keepSlot && inventory[1 - activeSlot]) {
-    activeSlot = 1 - activeSlot;
-  }
-
+  };
   return true;
 }
 
+function finishDropAnimation() {
+  const drop = dropAnimation;
+  if (!drop) return;
+
+  weaponPickups.push({
+    ...drop.weapon,
+    id: `${drop.weapon.kind}-${Date.now()}`,
+    position: drop.landPosition,
+    heading: drop.heading,
+  });
+
+  inventory[activeSlot] = null;
+  dropAnimation = null;
+
+  if (drop.thenPickup) {
+    pickupAnimation = {
+      weapon: drop.thenPickup,
+      elapsed: 0,
+      duration: 1.05,
+      replaceOnly: true,
+    };
+  }
+}
+
+function updateDropAnimation(deltaSeconds) {
+  if (!dropAnimation) return;
+
+  dropAnimation.elapsed += deltaSeconds;
+  if (dropAnimation.elapsed >= dropAnimation.duration) {
+    finishDropAnimation();
+  }
+}
+
 function handleFKey() {
-  if (pickupAnimation) return;
+  if (pickupAnimation || dropAnimation) return;
 
   if (nearbyWeapons.length > 0) {
     tryStartWeaponPickup();
@@ -512,7 +1783,7 @@ function handleFKey() {
 }
 
 function handleEKey() {
-  if (pickupAnimation) return;
+  if (pickupAnimation || dropAnimation || weaponSwitch) return;
   dropActiveWeapon();
 }
 
@@ -524,6 +1795,10 @@ function getLookDirection() {
   ];
 }
 
+function getViewmodelLook() {
+  return getLookDirection();
+}
+
 function updateCombat(deltaSeconds) {
   if (isAiming && !getEquippedWeapon()) {
     isAiming = false;
@@ -532,32 +1807,11 @@ function updateCombat(deltaSeconds) {
   fireCooldown = Math.max(0, fireCooldown - deltaSeconds);
   muzzleFlash = Math.max(0, muzzleFlash - deltaSeconds);
 
-  if (pickupAnimation || punchAnimation || weaponSwitch || !getEquippedWeapon()) return;
+  if (pickupAnimation || dropAnimation || punchAnimation || weaponSwitch || godView || !getEquippedWeapon()) return;
 
   if (mouseButtons.left && fireCooldown <= 0) {
     fireWeapon();
   }
-}
-
-function getShotDirection() {
-  const spread = isAiming ? 0.006 : 0.024;
-  const yaw = player.yaw + (Math.random() - 0.5) * spread;
-  const pitch = player.pitch + (Math.random() - 0.5) * spread;
-  return normalize([
-    Math.sin(yaw) * Math.cos(pitch),
-    Math.sin(pitch),
-    Math.cos(yaw) * Math.cos(pitch),
-  ]);
-}
-
-function getMuzzleOrigin(direction) {
-  const eye = player.position;
-  const right = [Math.cos(player.yaw), 0, -Math.sin(player.yaw)];
-  return [
-    eye[0] + direction[0] * 0.62 + right[0] * 0.08,
-    eye[1] + direction[1] * 0.62 - 0.1,
-    eye[2] + direction[2] * 0.62 + right[2] * 0.08,
-  ];
 }
 
 function initGunshotAudio() {
@@ -822,7 +2076,7 @@ function playPunchSound(kind) {
 }
 
 function startPunch() {
-  if (punchAnimation || pickupAnimation || weaponSwitch || getEquippedWeapon()) return;
+  if (punchAnimation || pickupAnimation || dropAnimation || weaponSwitch || getEquippedWeapon()) return;
 
   punchAnimation = {
     elapsed: 0,
@@ -843,7 +2097,7 @@ function getPunchProgress() {
 
 function updatePunch(deltaSeconds) {
   if (!punchAnimation) {
-    if (mouseButtons.left && !getEquippedWeapon() && !pickupAnimation && !weaponSwitch) {
+    if (!godView && mouseButtons.left && !getEquippedWeapon() && !pickupAnimation && !dropAnimation && !weaponSwitch) {
       startPunch();
     }
     return;
@@ -909,7 +2163,7 @@ function updateFootsteps(deltaSeconds) {
     return;
   }
 
-  if (!player.isMoving || !player.onGround || pickupAnimation || punchAnimation) {
+  if (!player.isMoving || !player.onGround || pickupAnimation || dropAnimation || punchAnimation) {
     lastFootstepCycle = player.handCycle;
     return;
   }
@@ -924,16 +2178,120 @@ function updateFootsteps(deltaSeconds) {
   playFootstep(player.isSprinting);
 }
 
+function getCrosshairRay() {
+  const look = getLookDirection();
+  const eye = getEyePosition();
+  // Front / side cameras look at the body, so screen-center would hit the player.
+  if (godView || CAMERA_MODES[cameraModeIndex] === "front") {
+    return { origin: eye, dir: look };
+  }
+  const camera = getRenderCamera(eye, look);
+  const dx = camera.target[0] - camera.position[0];
+  const dy = camera.target[1] - camera.position[1];
+  const dz = camera.target[2] - camera.position[2];
+  const len = Math.hypot(dx, dy, dz) || 1;
+  return {
+    origin: camera.position,
+    dir: [dx / len, dy / len, dz / len],
+  };
+}
+
+function raycastShot(origin, dir, maxRange) {
+  const end = [
+    origin[0] + dir[0] * maxRange,
+    origin[1] + dir[1] * maxRange,
+    origin[2] + dir[2] * maxRange,
+  ];
+  let closestHit = null;
+  const targetHit = segmentHitBox(origin, end, [target[0], 0.55, target[2]], [0.55, 0.55, 0.55]);
+  if (targetHit) {
+    closestHit = { ...targetHit, kind: "target" };
+  }
+
+  for (const obstacle of obstacles) {
+    const half = obstacle.size.map((value) => value / 2);
+    const hit = segmentHitBox(origin, end, obstacle.position, half);
+    if (!hit) continue;
+    if (!closestHit || hit.t < closestHit.t) {
+      closestHit = { ...hit, kind: "wall" };
+    }
+  }
+
+  const groundHit = segmentHitGround(origin, end);
+  if (groundHit && (!closestHit || groundHit.t < closestHit.t)) {
+    closestHit = { ...groundHit, kind: "ground" };
+  }
+  return closestHit;
+}
+
+function applyShotHit(hit, incomingDir) {
+  if (hit.kind === "target") {
+    score += isAiming ? 2 : 1;
+    scoreEl.textContent = String(score);
+    target = randomTarget();
+    spawnImpactSpark(hit.point, true);
+    return;
+  }
+  spawnImpactSpark(hit.point, false);
+  spawnBulletHole(hit.point, hit.normal, incomingDir);
+}
+
+function getMuzzleWorldPosition() {
+  const weapon = getActiveViewWeapon();
+  if (!weapon) return null;
+  const eye = getEyePosition();
+  const basis = makeViewBasis(getViewmodelLook(), eye);
+  const hold = getViewWeaponHold(weapon.kind);
+  const local = transformViewPoint(
+    hold.position,
+    hold.euler,
+    hold.scale,
+    [0, 0.035, WEAPON_DEFS[weapon.kind].barrelZ],
+  );
+  return toWorldPoint(basis, local[0], local[1], local[2]);
+}
+
 function spawnBullet(weaponKind) {
   const def = WEAPON_DEFS[weaponKind];
-  const direction = getShotDirection();
+  const ray = getCrosshairRay();
+  const aimStart = isFirstPerson() ? 0.12 : 0.35;
+  const aimOrigin = [
+    ray.origin[0] + ray.dir[0] * aimStart,
+    ray.origin[1] + ray.dir[1] * aimStart,
+    ray.origin[2] + ray.dir[2] * aimStart,
+  ];
+  const hit = raycastShot(aimOrigin, ray.dir, 130);
+  if (hit) applyShotHit(hit, ray.dir);
+  const aimPoint = hit
+    ? hit.point
+    : [
+        ray.origin[0] + ray.dir[0] * 130,
+        ray.origin[1] + ray.dir[1] * 130,
+        ray.origin[2] + ray.dir[2] * 130,
+      ];
+
+  let origin = aimOrigin;
+  let direction = ray.dir;
+  const muzzle = isFirstPerson() ? null : getMuzzleWorldPosition();
+  if (muzzle) {
+    origin = muzzle;
+    const dx = aimPoint[0] - muzzle[0];
+    const dy = aimPoint[1] - muzzle[1];
+    const dz = aimPoint[2] - muzzle[2];
+    const len = Math.hypot(dx, dy, dz) || 1;
+    direction = [dx / len, dy / len, dz / len];
+  }
+  const maxRange = Math.max(
+    0.08,
+    Math.hypot(aimPoint[0] - origin[0], aimPoint[1] - origin[1], aimPoint[2] - origin[2]),
+  );
 
   bullets.push({
-    position: getMuzzleOrigin(direction),
+    position: origin,
     direction,
     speed: def.bulletSpeed,
     traveled: 0,
-    maxRange: 130,
+    maxRange,
     kind: weaponKind,
     tracerLength: def.tracerLength,
     tracerColor: def.tracerColor,
@@ -948,19 +2306,11 @@ function updateBullets(deltaSeconds) {
   for (let index = bullets.length - 1; index >= 0; index -= 1) {
     const bullet = bullets[index];
     const step = bullet.speed * deltaSeconds;
-    const previous = [bullet.position[0], bullet.position[1], bullet.position[2]];
-
     bullet.position[0] += bullet.direction[0] * step;
     bullet.position[1] += bullet.direction[1] * step;
     bullet.position[2] += bullet.direction[2] * step;
     bullet.traveled += step;
-
     if (bullet.traveled >= bullet.maxRange) {
-      bullets.splice(index, 1);
-      continue;
-    }
-
-    if (resolveBulletHit(bullet, previous)) {
       bullets.splice(index, 1);
     }
   }
@@ -1024,11 +2374,12 @@ function aabbHorizontalOverlap(probe, obstacle) {
 function getViewmodelProbes(x, z) {
   const forwardX = Math.sin(player.yaw);
   const forwardZ = Math.cos(player.yaw);
-  const rightX = Math.cos(player.yaw);
-  const rightZ = -Math.sin(player.yaw);
+  const viewRight = getViewRight();
+  const rightX = viewRight[0];
+  const rightZ = viewRight[2];
   const y = player.position[1] - 0.22;
   const armed = Boolean(getEquippedWeapon());
-  const ads = isAiming && armed;
+  const ads = getAdsBlend() > 0.45 && armed;
 
   if (ads) {
     return [
@@ -1039,38 +2390,38 @@ function getViewmodelProbes(x, z) {
     ];
   }
 
-  const rightReach = armed ? 0.86 : 1.08;
-  const leftReach = armed ? 0.74 : 1.08;
+  const rightReach = armed ? 0.36 : 0.4;
+  const leftReach = armed ? 0.32 : 0.4;
   const forwardReach = armed ? 0.68 : punchAnimation ? 0.42 : 0.58;
 
   const probes = [
     {
-      center: [x + forwardX * forwardReach + rightX * (armed ? 0.16 : 0.22), y, z + forwardZ * forwardReach + rightZ * (armed ? 0.16 : 0.22)],
-      half: [0.12, 0.16, 0.14],
+      center: [x + forwardX * forwardReach + rightX * (armed ? 0.12 : 0.16), y, z + forwardZ * forwardReach + rightZ * (armed ? 0.12 : 0.16)],
+      half: [0.1, 0.14, 0.1],
     },
     {
-      center: [x + forwardX * forwardReach * 0.52 + rightX * (armed ? 0.18 : 0.24), y, z + forwardZ * forwardReach * 0.52 + rightZ * (armed ? 0.18 : 0.24)],
-      half: [0.11, 0.15, 0.12],
+      center: [x + forwardX * forwardReach * 0.52 + rightX * (armed ? 0.14 : 0.16), y, z + forwardZ * forwardReach * 0.52 + rightZ * (armed ? 0.14 : 0.16)],
+      half: [0.09, 0.13, 0.1],
     },
     {
-      center: [x + forwardX * (armed ? 0.5 : 0.42) - rightX * leftReach * 0.42, y, z + forwardZ * (armed ? 0.5 : 0.42) - rightZ * leftReach * 0.42],
-      half: [0.12, 0.15, 0.12],
+      center: [x + forwardX * (armed ? 0.42 : 0.34) - rightX * leftReach * 0.35, y, z + forwardZ * (armed ? 0.42 : 0.34) - rightZ * leftReach * 0.35],
+      half: [0.1, 0.13, 0.1],
     },
     {
       center: [x + rightX * rightReach, y, z + rightZ * rightReach],
-      half: [0.26, 0.3, 0.26],
+      half: [0.12, 0.18, 0.12],
     },
     {
       center: [x - rightX * leftReach, y, z - rightZ * leftReach],
-      half: [0.26, 0.3, 0.26],
+      half: [0.12, 0.18, 0.12],
     },
     {
-      center: [x + forwardX * 0.28 + rightX * rightReach, y, z + forwardZ * 0.28 + rightZ * rightReach],
-      half: [0.24, 0.24, 0.24],
+      center: [x + forwardX * 0.18 + rightX * rightReach, y, z + forwardZ * 0.18 + rightZ * rightReach],
+      half: [0.11, 0.16, 0.11],
     },
     {
-      center: [x + forwardX * 0.28 - rightX * leftReach, y, z + forwardZ * 0.28 - rightZ * leftReach],
-      half: [0.24, 0.24, 0.24],
+      center: [x + forwardX * 0.18 - rightX * leftReach, y, z + forwardZ * 0.18 - rightZ * leftReach],
+      half: [0.11, 0.16, 0.11],
     },
   ];
 
@@ -1171,8 +2522,8 @@ function sampleClearance(direction, maxDistance) {
     [origin[0], origin[1] - 0.28, origin[2]],
     [origin[0] + forward[0] * 0.4, origin[1] - 0.12, origin[2] + forward[2] * 0.4],
     [origin[0] + forward[0] * 0.85, origin[1] - 0.1, origin[2] + forward[2] * 0.85],
-    [origin[0] + right[0] * 0.28, origin[1] - 0.14, origin[2] + right[2] * 0.28],
-    [origin[0] - right[0] * 0.28, origin[1] - 0.14, origin[2] - right[2] * 0.28],
+    [origin[0] + right[0] * 0.12, origin[1] - 0.14, origin[2] + right[2] * 0.12],
+    [origin[0] - right[0] * 0.12, origin[1] - 0.14, origin[2] - right[2] * 0.12],
   ];
 
   let closest = maxDistance;
@@ -1184,16 +2535,16 @@ function sampleClearance(direction, maxDistance) {
 
 function updateViewmodelPush(deltaSeconds) {
   const forward = normalize(getLookDirection());
-  const right = [Math.cos(player.yaw), 0, -Math.sin(player.yaw)];
+  const right = getViewRight();
   const left = [-right[0], 0, -right[2]];
   const armed = Boolean(getEquippedWeapon());
 
   const forwardDist = sampleClearance(forward, 1.05);
-  const rightDist = sampleClearance(right, 1.35);
-  const leftDist = sampleClearance(left, 1.35);
+  const rightDist = sampleClearance(right, 0.7);
+  const leftDist = sampleClearance(left, 0.7);
 
   const forwardNeed = punchAnimation ? 0.95 : armed ? 0.72 : 0.58;
-  const sideNeed = armed ? 0.98 : 1.18;
+  const sideNeed = armed ? 0.38 : 0.44;
   const forwardPush = clamp((forwardNeed - forwardDist) / 0.48, 0, 1);
   const rightPush = clamp((sideNeed - rightDist) / 0.82, 0, 1);
   const leftPush = clamp((sideNeed - leftDist) / 0.82, 0, 1);
@@ -1279,52 +2630,6 @@ function segmentHitBox(start, end, center, halfSize) {
   return { point, normal, t: tMin };
 }
 
-function resolveBulletHit(bullet, previous) {
-  const targetCenter = [target[0], 0.55, target[2]];
-  const targetHalf = [0.55, 0.55, 0.55];
-  let closestHit = null;
-
-  const targetHit = segmentHitBox(previous, bullet.position, targetCenter, targetHalf);
-  if (targetHit) {
-    closestHit = { ...targetHit, kind: "target" };
-  }
-
-  for (const obstacle of obstacles) {
-    const half = obstacle.size.map((value) => value / 2);
-    const hit = segmentHitBox(previous, bullet.position, obstacle.position, half);
-    if (!hit) continue;
-
-    if (!closestHit || hit.t < closestHit.t) {
-      closestHit = { ...hit, kind: "wall", obstacleId: obstacle.id };
-    }
-  }
-
-  const groundHit = segmentHitGround(previous, bullet.position);
-  if (groundHit && (!closestHit || groundHit.t < closestHit.t)) {
-    closestHit = { ...groundHit, kind: "ground" };
-  }
-
-  if (!closestHit) {
-    return false;
-  }
-
-  bullet.position[0] = closestHit.point[0];
-  bullet.position[1] = closestHit.point[1];
-  bullet.position[2] = closestHit.point[2];
-
-  if (closestHit.kind === "target") {
-    score += isAiming ? 2 : 1;
-    scoreEl.textContent = String(score);
-    target = randomTarget();
-    spawnImpactSpark(closestHit.point, true);
-    return true;
-  }
-
-  spawnImpactSpark(closestHit.point, false);
-  spawnBulletHole(closestHit.point, closestHit.normal);
-  return true;
-}
-
 function inferInsideHit(start, dir, min, max) {
   let bestAxis = 0;
   let bestDist = Infinity;
@@ -1378,18 +2683,27 @@ function segmentHitGround(start, end) {
   };
 }
 
-function spawnBulletHole(point, normal) {
+function spawnBulletHole(point, normal, incomingDir) {
   const absX = Math.abs(normal[0]);
   const absY = Math.abs(normal[1]);
   const absZ = Math.abs(normal[2]);
   const axis = absX >= absY && absX >= absZ ? 0 : absY >= absZ ? 1 : 2;
+  const dirLen = incomingDir ? Math.hypot(incomingDir[0], incomingDir[1], incomingDir[2]) : 0;
+  const dir = dirLen > 0.001
+    ? [incomingDir[0] / dirLen, incomingDir[1] / dirLen, incomingDir[2] / dirLen]
+    : [-normal[0], -normal[1], -normal[2]];
+  const pull = 0.012;
 
   bulletHoles.push({
-    position: [point[0], point[1], point[2]],
+    position: [
+      point[0] - dir[0] * pull,
+      point[1] - dir[1] * pull,
+      point[2] - dir[2] * pull,
+    ],
     normal: [normal[0], normal[1], normal[2]],
     axis,
-    size: 0.08 + Math.random() * 0.05,
-    rotation: Math.random() * Math.PI,
+    size: 0.07,
+    rotation: 0,
     life: 12,
     maxLife: 12,
   });
@@ -1412,30 +2726,19 @@ function addBulletHoleMesh(vertices, hole) {
   const fade = hole.life < 2.5 ? clamp(hole.life / 2.5, 0, 1) : 1;
   if (fade <= 0.04) return;
 
-  const n = hole.normal;
+  const pos = hole.position;
   const radius = hole.size * (0.55 + fade * 0.45);
-  const depth = 0.05 * fade;
-  const scorchPos = [
-    hole.position[0] + n[0] * 0.028,
-    hole.position[1] + n[1] * 0.028,
-    hole.position[2] + n[2] * 0.028,
-  ];
-  const craterPos = [
-    hole.position[0] - n[0] * (depth * 0.2),
-    hole.position[1] - n[1] * (depth * 0.2),
-    hole.position[2] - n[2] * (depth * 0.2),
-  ];
+  const depth = 0.016 * fade;
+  const scorchSize = [radius * 2.2, radius * 2.2, radius * 2.2];
+  scorchSize[hole.axis] = 0.01 * fade;
+  const craterSize = [radius, radius, radius];
+  craterSize[hole.axis] = Math.max(depth, 0.008);
+  const coreSize = [radius * 0.38, radius * 0.38, radius * 0.38];
+  coreSize[hole.axis] = Math.max(depth * 1.1, 0.009);
 
-  const scorchSize = [radius * 2.4, radius * 2.4, radius * 2.4];
-  scorchSize[hole.axis] = 0.016 * fade;
-  const craterSize = [radius * 1.2, radius * 1.2, radius * 1.2];
-  craterSize[hole.axis] = Math.max(depth, 0.01);
-  const coreSize = [radius * 0.42, radius * 0.42, radius * 0.42];
-  coreSize[hole.axis] = Math.max(depth * 1.25, 0.012);
-
-  addBox(vertices, scorchPos, scorchSize, [0.18 * fade, 0.16 * fade, 0.13 * fade]);
-  addBox(vertices, craterPos, craterSize, [0.05 * fade, 0.05 * fade, 0.055 * fade]);
-  addBox(vertices, craterPos, coreSize, [0.015 * fade, 0.015 * fade, 0.018 * fade]);
+  addBox(vertices, pos, scorchSize, [0.18 * fade, 0.16 * fade, 0.13 * fade]);
+  addBox(vertices, pos, craterSize, [0.05 * fade, 0.05 * fade, 0.055 * fade]);
+  addBox(vertices, pos, coreSize, [0.015 * fade, 0.015 * fade, 0.018 * fade]);
 }
 
 function segmentIntersectsBox(start, end, center, halfSize) {
@@ -1521,40 +2824,80 @@ function fireWeapon() {
   fireCooldown = def.fireRate;
   muzzleFlash = 0.05;
 
+  playGunshot(weapon.kind);
+  spawnBullet(weapon.kind);
+
   const recoilScale = isAiming ? 0.52 : 1;
   player.pitch += def.recoil * recoilScale;
   player.yaw += (Math.random() - 0.5) * def.recoilYaw * recoilScale;
   player.pitch = clamp(player.pitch, -1.35, 1.35);
-
-  playGunshot(weapon.kind);
-  spawnBullet(weapon.kind);
 }
 
 function updateAimUi() {
-  const aiming = isAiming && getEquippedWeapon();
-  crosshairEl?.classList.toggle("ads-mode", aiming);
-  scopeOverlayEl?.classList.toggle("active", aiming);
+  const overlay = isFirstPerson() ? getScopeOverlayBlend() : 0;
+  crosshairEl?.classList.toggle("hidden", CAMERA_MODES[cameraModeIndex] === "front" || godView);
+  crosshairEl?.classList.toggle("ads-mode", overlay > 0.35);
+  if (scopeOverlayEl) {
+    scopeOverlayEl.classList.toggle("active", overlay > 0.02);
+    scopeOverlayEl.style.opacity = String(overlay);
+  }
+}
+
+function updateAds(deltaSeconds) {
+  if (isViewmodelBlocked()) {
+    isAiming = false;
+  }
+  const want = isFirstPerson() && isAiming && getEquippedWeapon() && !isViewmodelBlocked() && !weaponSwitch && !dropAnimation && !pickupAnimation;
+  const target = want ? 1 : 0;
+  const duration = target > adsProgress ? 0.28 : 0.18;
+  const step = deltaSeconds / duration;
+  if (adsProgress < target) {
+    adsProgress = Math.min(target, adsProgress + step);
+  } else {
+    adsProgress = Math.max(target, adsProgress - step);
+  }
+  if (!getEquippedWeapon()) adsProgress = 0;
+}
+
+function getAdsBlend() {
+  return easeInOut(clamp(adsProgress, 0, 1));
+}
+
+function getScopeOverlayBlend() {
+  return easeInOut(clamp((adsProgress - 0.72) / 0.28, 0, 1));
+}
+
+function getViewmodelSwing() {
+  const walkAmount = player.handSway * (pickupAnimation || dropAnimation ? 0.15 : 1);
+  const sprintAmount = player.isSprinting ? 1 : 0;
+  const aimDamp = getAdsBlend() > 0.2 && getEquippedWeapon() && !dropAnimation ? 0.3 : 1;
+  const amplitude = (0.018 + sprintAmount * 0.012) * walkAmount * aimDamp;
+  const cycle = player.handCycle;
+  return {
+    x: Math.cos(cycle) * amplitude,
+    y: Math.sin(cycle) * amplitude,
+    amplitude,
+    walkAmount,
+    sprintAmount,
+    aimDamp,
+  };
 }
 
 function getHeldSway(holdProgress) {
-  const walkAmount = player.handSway * (pickupAnimation ? 0.15 : 1);
-  const sprintAmount = player.isSprinting ? 1 : 0;
-  const aimDamp = isAiming && getEquippedWeapon() ? 0.3 : 1;
-  const bob = Math.sin(player.handCycle) * (0.018 + sprintAmount * 0.012) * walkAmount * aimDamp;
-  const sway = Math.cos(player.handCycle * 0.8) * (0.018 + sprintAmount * 0.012) * walkAmount * aimDamp;
-  const ads = isAiming && getEquippedWeapon() && !weaponSwitch ? 1 : 0;
-  return { bob, sway, ads, holdProgress };
+  const swing = getViewmodelSwing();
+  const ads = getAdsBlend();
+  return { bob: swing.y, sway: swing.x, ads, holdProgress };
 }
 
 function offsetForAds(baseX, baseY, baseZ, ads) {
   const dip = getSwitchDip();
   const push = player.viewmodelPush;
   const sidePush = player.viewmodelSidePush;
-  const xScale = 1 - ads * 0.18 - push * 0.42 - Math.abs(sidePush) * 0.35;
+  const xScale = 1 - push * 0.42 - Math.abs(sidePush) * 0.35;
   return [
     baseX * xScale - sidePush * 0.58 + dip * 0.16,
-    baseY + ads * 0.14 - dip * 0.82 - push * 0.2,
-    baseZ + ads * 0.2 - dip * 0.38 - push * 0.48 - Math.abs(sidePush) * 0.42,
+    baseY - dip * 0.82 - push * 0.2,
+    baseZ - dip * 0.38 - push * 0.48 - Math.abs(sidePush) * 0.42,
   ];
 }
 
@@ -1570,7 +2913,7 @@ function addWeaponToInventory(weapon) {
 }
 
 function switchToSlot(slot) {
-  if (pickupAnimation || punchAnimation) return;
+  if (pickupAnimation || dropAnimation || punchAnimation) return;
   if (slot !== 0 && slot !== 1) return;
   if (weaponSwitch) return;
   if (slot === activeSlot) return;
@@ -1679,6 +3022,22 @@ function updateWeaponPrompt() {
     .filter((weapon) => weapon.distance <= weaponPromptRange)
     .sort((a, b) => a.distance - b.distance);
 
+  if (dropAnimation) {
+    weaponPromptEl.classList.remove("hidden");
+    weaponPromptEl.innerHTML = `
+      <div class="weapon-prompt__title">Dropping</div>
+      <div class="weapon-row">
+        <div class="weapon-row__key">E</div>
+        <div>
+          <div class="weapon-row__name">${dropAnimation.weapon.name}</div>
+          <div class="weapon-row__meta">Lowering weapon</div>
+        </div>
+        <div class="weapon-row__distance">${Math.round((1 - getHoldBlend()) * 100)}%</div>
+      </div>
+    `;
+    return;
+  }
+
   if (pickupAnimation) {
     weaponPromptEl.classList.remove("hidden");
     weaponPromptEl.innerHTML = `
@@ -1722,23 +3081,27 @@ function updateWeaponPrompt() {
 }
 
 function tryStartWeaponPickup() {
-  if (pickupAnimation || nearbyWeapons.length === 0) return;
+  if (pickupAnimation || dropAnimation || nearbyWeapons.length === 0) return;
 
   const weapon = nearbyWeapons[0];
   const pickupIndex = weaponPickups.findIndex((item) => item.id === weapon.id);
   if (pickupIndex === -1) return;
 
   const replacing = Boolean(getEquippedWeapon());
+  weaponPickups.splice(pickupIndex, 1);
+
   if (replacing) {
-    dropActiveWeapon({ keepSlot: true });
+    if (!dropActiveWeapon({ keepSlot: true, thenPickup: weapon })) {
+      weaponPickups.push(weapon);
+    }
+    return;
   }
 
-  weaponPickups.splice(pickupIndex, 1);
   pickupAnimation = {
     weapon,
     elapsed: 0,
-    duration: 1.15,
-    replaceOnly: replacing,
+    duration: 1.05,
+    replaceOnly: false,
   };
 }
 
@@ -1758,6 +3121,8 @@ function getPickupProgress() {
 }
 
 function addGroundWeapon(vertices, weapon) {
+  if (weaponModels[weapon.kind]) return;
+
   if (weapon.kind === "akm") {
     addAkmWeaponGround(vertices, weapon);
     return;
@@ -1840,19 +3205,30 @@ function addPickupBody(vertices, lookDirection, cameraPosition, progress) {
   const boot = [0.025, 0.03, 0.028];
   const pad = [0.11, 0.13, 0.11];
 
-  addViewEllipsoid(vertices, basis, [-0.42, -1.15 + amount * 0.1, 0.75], [0.22, 0.14, 0.42], fabric, 8, 14);
-  addViewEllipsoid(vertices, basis, [0.42, -1.15 + amount * 0.1, 0.75], [0.22, 0.14, 0.42], fabric, 8, 14);
+  addBeveledViewBox(vertices, basis, [-0.42, -1.15 + amount * 0.1, 0.75], [0.22, 0.14, 0.42], fabric);
+  addBeveledViewBox(vertices, basis, [0.42, -1.15 + amount * 0.1, 0.75], [0.22, 0.14, 0.42], fabric);
   addBeveledViewBox(vertices, basis, [-0.43, -1.04 + amount * 0.08, 0.98], [0.18, 0.045, 0.16], pad);
   addBeveledViewBox(vertices, basis, [0.43, -1.04 + amount * 0.08, 0.98], [0.18, 0.045, 0.16], pad);
-  addViewEllipsoid(vertices, basis, [-0.36, -1.28 + amount * 0.07, 1.18], [0.24, 0.12, 0.2], boot, 7, 12);
-  addViewEllipsoid(vertices, basis, [0.36, -1.28 + amount * 0.07, 1.18], [0.24, 0.12, 0.2], boot, 7, 12);
+  addBeveledViewBox(vertices, basis, [-0.36, -1.28 + amount * 0.07, 1.18], [0.24, 0.12, 0.2], boot);
+  addBeveledViewBox(vertices, basis, [0.36, -1.28 + amount * 0.07, 1.18], [0.24, 0.12, 0.2], boot);
 }
 
 function addHeldWeapon(vertices, lookDirection, cameraPosition, pickupProgress, weapon) {
-  if (!weapon && !pickupAnimation) return;
+  if (!weapon && !pickupAnimation && !dropAnimation) return;
 
-  const activeWeapon = weapon || pickupAnimation?.weapon;
+  const activeWeapon = getActiveViewWeapon();
   if (!activeWeapon) return;
+
+  if (weaponModels[activeWeapon.kind]) {
+    const basis = makeViewBasis(getViewmodelLook(), cameraPosition);
+    const holdProgress = getHoldBlend();
+    const hold = getViewWeaponHold(activeWeapon.kind);
+    if (muzzleFlash > 0 && holdProgress > 0.7) {
+      const muzzle = transformViewPoint(hold.position, hold.euler, hold.scale, [0, 0.035, WEAPON_DEFS[activeWeapon.kind].barrelZ]);
+      addViewBox(vertices, basis, muzzle, [0.07, 0.07, 0.1], [1, 0.92, 0.55]);
+    }
+    return;
+  }
 
   if (activeWeapon.kind === "akm") {
     addHeldAkmWeapon(vertices, lookDirection, cameraPosition, pickupProgress);
@@ -1873,7 +3249,7 @@ function addHeldAugWeapon(vertices, lookDirection, cameraPosition, pickupProgres
   const basis = makeViewBasis(lookDirection, cameraPosition);
   const holdProgress = pickupAnimation ? easeInOut(Math.max(0, pickupProgress - 0.35) / 0.65) : 1;
   const { bob, sway, ads } = getHeldSway(holdProgress);
-  const [baseX, baseY, baseZ] = offsetForAds(0.1 + sway, -0.82 + holdProgress * 0.42 + bob, 1.32 - holdProgress * 0.42, ads);
+  const [baseX, baseY, baseZ] = offsetForAds(0.22 + sway, -0.86 + holdProgress * 0.4 + bob, 1.28 - holdProgress * 0.4, ads);
   const dark = [0.06, 0.07, 0.064];
   const receiver = [0.24, 0.31, 0.22];
   const polymer = [0.34, 0.37, 0.26];
@@ -1897,7 +3273,7 @@ function addHeldAkmWeapon(vertices, lookDirection, cameraPosition, pickupProgres
   const basis = makeViewBasis(lookDirection, cameraPosition);
   const holdProgress = pickupAnimation ? easeInOut(Math.max(0, pickupProgress - 0.35) / 0.65) : 1;
   const { bob, sway, ads } = getHeldSway(holdProgress);
-  const [baseX, baseY, baseZ] = offsetForAds(0.08 + sway, -0.84 + holdProgress * 0.4 + bob, 1.28 - holdProgress * 0.4, ads);
+  const [baseX, baseY, baseZ] = offsetForAds(0.2 + sway, -0.88 + holdProgress * 0.38 + bob, 1.26 - holdProgress * 0.38, ads);
   const wood = [0.42, 0.28, 0.16];
   const receiver = [0.2, 0.24, 0.18];
   const metal = [0.14, 0.15, 0.14];
@@ -1917,7 +3293,7 @@ function addHeldM4Weapon(vertices, lookDirection, cameraPosition, pickupProgress
   const basis = makeViewBasis(lookDirection, cameraPosition);
   const holdProgress = pickupAnimation ? easeInOut(Math.max(0, pickupProgress - 0.35) / 0.65) : 1;
   const { bob, sway, ads } = getHeldSway(holdProgress);
-  const [baseX, baseY, baseZ] = offsetForAds(0.1 + sway, -0.83 + holdProgress * 0.4 + bob, 1.3 - holdProgress * 0.4, ads);
+  const [baseX, baseY, baseZ] = offsetForAds(0.21 + sway, -0.86 + holdProgress * 0.38 + bob, 1.26 - holdProgress * 0.38, ads);
   const polymer = [0.24, 0.28, 0.2];
   const metal = [0.14, 0.15, 0.14];
   const dark = [0.06, 0.07, 0.064];
@@ -1942,15 +3318,19 @@ function addBox(vertices, position, size, color) {
   const z0 = cz - sz;
   const z1 = cz + sz;
 
-  const darker = color.map((value) => value * 0.72);
-  const lighter = color.map((value) => Math.min(value * 1.18, 1));
+  const darker = sunLitColor(color, [0, 0, -1]);
+  const lighter = sunLitColor(color, [0, 1, 0]);
+  const front = sunLitColor(color, [0, 0, 1]);
+  const right = sunLitColor(color, [1, 0, 0]);
+  const left = sunLitColor(color, [-1, 0, 0]);
+  const bottom = sunLitColor(color, [0, -1, 0]);
 
-  addQuad(vertices, [x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1], color);
+  addQuad(vertices, [x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1], front);
   addQuad(vertices, [x1, y0, z0], [x0, y0, z0], [x0, y1, z0], [x1, y1, z0], darker);
   addQuad(vertices, [x0, y1, z1], [x1, y1, z1], [x1, y1, z0], [x0, y1, z0], lighter);
-  addQuad(vertices, [x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1], darker);
-  addQuad(vertices, [x1, y0, z1], [x1, y0, z0], [x1, y1, z0], [x1, y1, z1], color);
-  addQuad(vertices, [x0, y0, z0], [x0, y0, z1], [x0, y1, z1], [x0, y1, z0], darker);
+  addQuad(vertices, [x0, y0, z0], [x1, y0, z0], [x1, y0, z1], [x0, y0, z1], bottom);
+  addQuad(vertices, [x1, y0, z1], [x1, y0, z0], [x1, y1, z0], [x1, y1, z1], right);
+  addQuad(vertices, [x0, y0, z0], [x0, y0, z1], [x0, y1, z1], [x0, y1, z0], left);
 }
 
 function addFirstPersonHands(vertices, lookDirection, cameraPosition) {
@@ -1965,8 +3345,11 @@ function addFirstPersonHands(vertices, lookDirection, cameraPosition) {
     return;
   }
 
+  const holdBlend = getHoldBlend();
   addHand(vertices, basis, -1, skin, palm, glovePad, nail);
-  addHand(vertices, basis, 1, skin, palm, glovePad, nail);
+  if (holdBlend < 0.4) {
+    addHand(vertices, basis, 1, skin, palm, glovePad, nail);
+  }
 }
 
 function addIdleArms(vertices, basis, skin, palm, glovePad, nail) {
@@ -2017,6 +3400,23 @@ function getPunchJoints(side, isStriking) {
   const xScale = 1 - push * 0.28 - Math.abs(sidePush) * 0.5;
   const maxZ = getPunchReachLimit();
   const clampZ = (value) => Math.min(value, maxZ);
+
+  if (!isFirstPerson()) {
+    if (!isStriking) {
+      return {
+        shoulder: [side * 0.26, -0.32, 0.1],
+        elbow: [side * 0.34, -0.44, 0.2],
+        wrist: [side * 0.2, -0.36, 0.34],
+        hand: [side * 0.16, -0.3, 0.44],
+      };
+    }
+    return {
+      shoulder: [side * 0.26, -0.32, 0.1],
+      elbow: [side * (0.3 - punchT * 0.06), -0.4 + punchT * 0.06, 0.18 + punchT * 0.1],
+      wrist: [side * (0.16 - punchT * 0.08), -0.3 + punchT * 0.05, clampZ(0.4 + punchT * 0.28)],
+      hand: [side * (0.1 - punchT * 0.08), -0.24 + punchT * 0.06, clampZ(0.5 + punchT * 0.34)],
+    };
+  }
 
   if (!isStriking) {
     return {
@@ -2072,8 +3472,8 @@ function addRectangularFist(vertices, basis, wrist, hand, side, skin, palm, glov
   addBeveledViewBox(vertices, fistBasis, [0, 0.045, 0.08], [0.17, 0.06, 0.12], glovePad);
   addBeveledViewBox(vertices, fistBasis, [0, -0.02, 0.07], [0.16, 0.06, 0.1], palm);
   addBeveledViewBox(vertices, fistBasis, [-side * 0.08, 0.0, -0.01], [0.07, 0.08, 0.13], palm);
-  addViewEllipsoid(vertices, fistBasis, [-side * 0.06, -0.015, 0.04], [0.05, 0.045, 0.07], skin, 6, 10);
-  addViewEllipsoid(vertices, fistBasis, [0, 0.0, -0.08], [0.16, 0.13, 0.14], palm, 10, 14);
+  addBeveledViewBox(vertices, fistBasis, [-side * 0.06, -0.015, 0.04], [0.05, 0.045, 0.07], skin);
+  addBeveledViewBox(vertices, fistBasis, [0, 0.0, -0.08], [0.16, 0.13, 0.14], palm);
 }
 
 function easeOutPunch(value) {
@@ -2133,29 +3533,60 @@ function mix3(a, b, t) {
   return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
 }
 
-function addArticulatedArm(vertices, basis, shoulder, elbow, wrist, sleeve, hand = null, handColor = null, capHand = true) {
-  const upperStart = 0.145;
-  const elbowRadius = 0.118;
-  const wristRadius = 0.1;
-  const palmColor = handColor || sleeve;
+function addTacticalGlove(vertices, basis, palm, side, curl, scale = 1, includeThumb = true) {
+  const s = scale;
+  const skin = [0.9, 0.64, 0.5];
+  const glove = [0.24, 0.22, 0.18];
+  const p = (x, y, z) => [palm[0] + x * s, palm[1] + y * s, palm[2] + z * s];
 
-  addViewCylinder(vertices, basis, shoulder, elbow, upperStart, elbowRadius, sleeve, 16);
-  addViewCylinder(vertices, basis, elbow, wrist, elbowRadius, wristRadius, sleeve, 16);
-  addViewEllipsoid(vertices, basis, shoulder, [upperStart * 2.05, upperStart * 2.05, upperStart * 2.05], sleeve, 12, 16);
-  addViewEllipsoid(vertices, basis, elbow, [elbowRadius * 2.1, elbowRadius * 2.1, elbowRadius * 2.1], sleeve, 14, 18);
-  addViewEllipsoid(vertices, basis, wrist, [wristRadius * 2.2, wristRadius * 2.2, wristRadius * 2.2], palmColor, 12, 16);
+  addBeveledViewBox(vertices, basis, p(0, 0.01, 0.04), [0.2 * s, 0.07 * s, 0.24 * s], skin);
+  addBeveledViewBox(vertices, basis, p(0, 0.038, 0.02), [0.17 * s, 0.024 * s, 0.14 * s], glove);
+  addBeveledViewBox(vertices, basis, p(0, -0.006, -0.06), [0.16 * s, 0.06 * s, 0.14 * s], glove);
+  addBeveledViewBox(vertices, basis, p(0, -0.012, -0.12), [0.14 * s, 0.07 * s, 0.08 * s], glove);
 
-  if (hand) {
-    addViewCylinder(vertices, basis, mix3(elbow, wrist, 0.65), hand, wristRadius, 0.11, palmColor, 16);
-    if (capHand) {
-      addViewEllipsoid(vertices, basis, hand, [0.24, 0.18, 0.22], palmColor, 12, 16);
-    } else {
-      addViewEllipsoid(vertices, basis, mix3(wrist, hand, 0.4), [0.2, 0.16, 0.16], palmColor, 10, 14);
-    }
+  const fingers = [
+    { x: -side * 0.062, length: 0.18, width: 0.04 },
+    { x: -side * 0.02, length: 0.2, width: 0.044 },
+    { x: side * 0.022, length: 0.186, width: 0.042 },
+    { x: side * 0.062, length: 0.15, width: 0.036 },
+  ];
+  for (const finger of fingers) {
+    addBoxFinger(vertices, basis, p(finger.x, 0.014, 0.13), finger.length * s, finger.width * s, curl, skin, glove);
+  }
+
+  if (includeThumb) {
+    addBoxFinger(vertices, basis, p(-side * 0.09, 0.006, 0.02), 0.13 * s, 0.044 * s, curl * 0.65, skin, glove);
   }
 }
 
-function addViewCylinder(vertices, basis, from, to, radiusStart, radiusEnd, color, segments = 16) {
+function addBoxFinger(vertices, basis, origin, length, width, curl, skin, glove) {
+  const seg = length / 3;
+  for (let index = 0; index < 3; index += 1) {
+    const bend = curl * index * 0.042;
+    addBeveledViewBox(
+      vertices,
+      basis,
+      [origin[0], origin[1] - bend, origin[2] + (index + 0.5) * seg - bend * 0.15],
+      [width * (1 - index * 0.12), width * 1.15, seg * 0.95],
+      index === 0 ? glove : skin,
+    );
+  }
+}
+
+function addArticulatedArm(vertices, basis, shoulder, elbow, wrist, sleeve, hand = null, handColor = null, capHand = true) {
+  const palmColor = handColor || sleeve;
+  addViewBeam(vertices, basis, shoulder, elbow, 0.13, 0.11, sleeve);
+  addViewBeam(vertices, basis, elbow, wrist, 0.11, 0.09, sleeve);
+  addBeveledViewBox(vertices, basis, shoulder, [0.16, 0.16, 0.16], sleeve);
+  addBeveledViewBox(vertices, basis, elbow, [0.14, 0.14, 0.14], sleeve);
+
+  if (hand) {
+    addViewBeam(vertices, basis, mix3(elbow, wrist, 0.65), hand, 0.09, 0.1, palmColor);
+    addBeveledViewBox(vertices, basis, mix3(wrist, hand, 0.55), [0.16, 0.12, 0.14], palmColor);
+  }
+}
+
+function addViewBeam(vertices, basis, from, to, thickStart, thickEnd, color) {
   const start = viewToWorld(basis, from);
   const end = viewToWorld(basis, to);
   const dx = end[0] - start[0];
@@ -2167,36 +3598,29 @@ function addViewCylinder(vertices, basis, from, to, radiusStart, radiusEnd, colo
   if (Math.hypot(right[0], right[1], right[2]) < 0.001) {
     right = cross([1, 0, 0], forward);
   }
-  normalize(right);
+  right = normalize(right);
   const up = normalize(cross(forward, right));
-  const darker = color.map((value) => value * 0.7);
-  const lighter = color.map((value) => Math.min(value * 1.18, 1));
-
-  const ringAt = (origin, radius) => {
-    const points = [];
-    for (let index = 0; index < segments; index += 1) {
-      const angle = (index / segments) * Math.PI * 2;
-      const ca = Math.cos(angle);
-      const sa = Math.sin(angle);
-      points.push([
-        origin[0] + (right[0] * ca + up[0] * sa) * radius,
-        origin[1] + (right[1] * ca + up[1] * sa) * radius,
-        origin[2] + (right[2] * ca + up[2] * sa) * radius,
-      ]);
-    }
-    return points;
-  };
-
-  const startRing = ringAt(start, radiusStart);
-  const endRing = ringAt(end, radiusEnd);
+  const darker = color.map((value) => value * 0.72);
+  const lighter = color.map((value) => Math.min(value * 1.16, 1));
+  const corners = [
+    [-1, -1],
+    [1, -1],
+    [1, 1],
+    [-1, 1],
+  ];
+  const ringAt = (origin, radius) =>
+    corners.map(([u, v]) => [
+      origin[0] + (right[0] * u + up[0] * v) * radius,
+      origin[1] + (right[1] * u + up[1] * v) * radius,
+      origin[2] + (right[2] * u + up[2] * v) * radius,
+    ]);
+  const startRing = ringAt(start, thickStart);
+  const endRing = ringAt(end, thickEnd);
   addPolygonFace(vertices, [...startRing].reverse(), darker);
   addPolygonFace(vertices, endRing, lighter);
-
-  for (let index = 0; index < segments; index += 1) {
-    const next = (index + 1) % segments;
-    const shade = 0.78 + 0.22 * ((Math.cos((index / segments) * Math.PI * 2) + 1) * 0.5);
-    const sideColor = color.map((value) => Math.min(value * shade, 1));
-    addQuad(vertices, startRing[index], startRing[next], endRing[next], endRing[index], sideColor);
+  for (let index = 0; index < 4; index += 1) {
+    const next = (index + 1) % 4;
+    addQuad(vertices, startRing[index], startRing[next], endRing[next], endRing[index], index % 2 === 0 ? color : darker);
   }
 }
 
@@ -2209,9 +3633,9 @@ function viewToWorld(basis, point) {
 }
 
 function addBentArm(vertices, basis, elbow, wrist, hand, palm, glovePad) {
-  addViewEllipsoid(vertices, basis, elbow, [0.24, 0.14, 0.38], palm, 8, 14);
-  addViewEllipsoid(vertices, basis, wrist, [0.2, 0.12, 0.34], palm, 8, 14);
-  addViewEllipsoid(vertices, basis, hand, [0.15, 0.1, 0.18], glovePad, 7, 12);
+  addBeveledViewBox(vertices, basis, elbow, [0.24, 0.14, 0.38], palm);
+  addBeveledViewBox(vertices, basis, wrist, [0.2, 0.12, 0.34], palm);
+  addBeveledViewBox(vertices, basis, hand, [0.15, 0.1, 0.18], glovePad);
 }
 
 function addGripHand(vertices, basis, center, side, skin, palm, glovePad, nail) {
@@ -2222,12 +3646,14 @@ function addGripHand(vertices, basis, center, side, skin, palm, glovePad, nail) 
     const x = center[0] + side * (0.04 + index * 0.035);
     const y = center[1] - 0.03 - index * 0.004;
     const z = center[2] + 0.1 - index * 0.02;
-    addViewEllipsoid(vertices, basis, [x, y, z], [0.045, 0.052, 0.14], palm, 7, 12);
-    addViewEllipsoid(vertices, basis, [x, y - 0.04, z + 0.07], [0.035, 0.03, 0.04], skin, 5, 10);
+    addBeveledViewBox(vertices, basis, [x, y, z], [0.045, 0.052, 0.14], palm);
+    addBeveledViewBox(vertices, basis, [x, y - 0.04, z + 0.07], [0.035, 0.03, 0.04], skin);
   }
 
-  addViewEllipsoid(vertices, basis, [center[0] - side * 0.12, center[1] + 0.005, center[2] + 0.02], [0.055, 0.06, 0.15], palm, 7, 12);
-  addViewEllipsoid(vertices, basis, [center[0] - side * 0.15, center[1] - 0.03, center[2] + 0.09], [0.035, 0.03, 0.04], nail, 5, 10);
+  if (side > 0) {
+    addBeveledViewBox(vertices, basis, [center[0] - side * 0.12, center[1] + 0.005, center[2] + 0.02], [0.055, 0.06, 0.15], palm);
+    addBeveledViewBox(vertices, basis, [center[0] - side * 0.15, center[1] - 0.03, center[2] + 0.09], [0.035, 0.03, 0.04], nail);
+  }
 }
 
 function addHand(vertices, basis, side, skin, palm, glovePad, nail) {
@@ -2239,92 +3665,51 @@ function addHand(vertices, basis, side, skin, palm, glovePad, nail) {
   const lateralSway = Math.cos(phase) * (0.025 + sprintAmount * 0.018) * moveAmount;
   const forwardSway = Math.sin(phase) * (0.035 + sprintAmount * 0.03) * moveAmount;
   const jumpLag = player.onGround ? 0 : clamp(-player.verticalVelocity * 0.01, -0.08, 0.08);
-  const sway = {
+  const idleSway = {
     x: side * lateralSway,
     y: idleBreath - walkBob + jumpLag,
     z: forwardSway,
   };
-  const pickupReach = Math.sin(getPickupProgress() * Math.PI);
-  const holdingWeapon = getEquippedWeapon() && !pickupAnimation;
-  const handBasis = makeHandBasis(basis, side, Math.sin(phase) * moveAmount * 0.08);
+  const pickupReach = pickupAnimation ? Math.sin(getPickupProgress() * Math.PI) : dropAnimation ? Math.sin(getHoldBlend() * Math.PI) * 0.35 : 0;
+  const holdBlend = getHoldBlend();
+  const { bob, sway: gunSway, ads } = getHeldSway(holdBlend);
+  const viewWeapon = getActiveViewWeapon();
+  const adsShift = viewWeapon ? getAdsShift(viewWeapon.kind, holdBlend, bob, gunSway) : [0, 0, 0];
   const dip = getSwitchDip();
   const push = player.viewmodelPush;
   const sidePush = player.viewmodelSidePush;
   const xScale = 1 - push * 0.22 - Math.abs(sidePush) * 0.62;
-  const place = (center) => [
-    center[0] * xScale + sway.x - side * pickupReach * 0.12 + dip * side * 0.08 - sidePush * 0.52,
-    center[1] + sway.y - pickupReach * 0.22 - dip * 0.55 - push * 0.1,
-    center[2] + sway.z + pickupReach * 0.34 - dip * 0.22 - push * 0.38 - Math.abs(sidePush) * 0.38,
+  const idlePlace = (center) => [
+    center[0] * xScale + idleSway.x + dip * side * 0.08 - sidePush * 0.52,
+    center[1] + idleSway.y - pickupReach * 0.18 - dip * 0.55 - push * 0.1,
+    center[2] + idleSway.z + pickupReach * 0.22 - dip * 0.22 - push * 0.38 - Math.abs(sidePush) * 0.38,
   ];
+  const holdPlace = (center) => {
+    const posed = offsetForAds(center[0] + gunSway, center[1] + bob, center[2], ads * holdBlend);
+    return [posed[0] + adsShift[0], posed[1] + adsShift[1], posed[2] + adsShift[2]];
+  };
+  const place = (center) => mix3(idlePlace(center), holdPlace(center), holdBlend);
 
-  const elbowPulse = Math.sin(phase) * (0.045 + sprintAmount * 0.02) * moveAmount;
-  const arm = holdingWeapon
-    ? side > 0
-      ? {
-          shoulder: [side * 0.5, -1.38, 0.03],
-          elbow: [side * 1.02, -1.16 + elbowPulse * 0.25, 0.18],
-          wrist: [side * 0.4, -0.74, 0.72],
-        }
-      : {
-          shoulder: [side * 0.48, -1.4, 0.02],
-          elbow: [side * 0.88, -1.02 + elbowPulse * 0.22, 0.32],
-          wrist: [side * 0.28, -0.72, 0.9],
-        }
-    : {
-        shoulder: [side * 0.52, -1.42, 0.02],
-        elbow: [side * 1.2, -1.3 + elbowPulse, 0.14],
-        wrist: [side * 0.74, -0.74, 0.88],
-      };
-
-  const sleeve = [0.16, 0.2, 0.13];
-  const handScale = 0.7;
-  const srcPalm = [side * 1.04, -0.86, 1.2];
-  const palmLocal = [
-    arm.wrist[0] - side * 0.015,
-    arm.wrist[1] + 0.025,
-    arm.wrist[2] + 0.1,
-  ];
-  addArticulatedArm(
-    vertices,
-    handBasis,
-    place(arm.shoulder),
-    place(arm.elbow),
-    place(arm.wrist),
-    sleeve,
-    place(palmLocal),
-    palm,
-  );
-
-  const mapHand = (point) => [
-    palmLocal[0] + (point[0] - srcPalm[0]) * handScale,
-    palmLocal[1] + (point[1] - srcPalm[1]) * handScale,
-    palmLocal[2] + (point[2] - srcPalm[2]) * handScale,
-  ];
-  const placeHand = (center) => place(mapHand(center));
-
-  if (pickupReach > 0.05) {
-    addBeveledViewBox(vertices, handBasis, placeHand([side * 1.2, -1.02, 0.78]), [0.14, 0.084, 0.385], palm);
+  const idlePalm = [side * 0.4, -0.41, 0.6];
+  const riflePalm = side > 0 ? [0.28, -0.34, 0.54] : [0.02, -0.3, 0.78];
+  const palmLocal = mix3(idlePalm, riflePalm, holdBlend);
+  let palmShift = [0, 0, 0];
+  if (viewWeapon && holdBlend > 0.02) {
+    const targetPalm = getWeaponContact(viewWeapon.kind, holdBlend, bob, gunSway, ads, side);
+    const placedPalm = place(palmLocal);
+    palmShift = [
+      (targetPalm[0] - placedPalm[0]) * holdBlend,
+      (targetPalm[1] - placedPalm[1]) * holdBlend,
+      (targetPalm[2] - placedPalm[2]) * holdBlend,
+    ];
   }
-
-  addHybridHandPart(vertices, handBasis, placeHand([side * 1.08, -0.88, 1.1]), [0.18, 0.11, 0.16], [0.2, 0.13, 0.18], palm, palm);
-  addHybridHandPart(vertices, handBasis, placeHand([side * 1.04, -0.86, 1.2]), [0.22, 0.14, 0.2], [0.25, 0.16, 0.22], palm, palm);
-  addHybridHandPart(vertices, handBasis, placeHand([side * 1.04, -0.8, 1.3]), [0.2, 0.07, 0.12], [0.22, 0.08, 0.13], palm, palm, 6, 14);
-  addBeveledViewBox(vertices, handBasis, placeHand([side * 1.04, -0.74, 1.18]), [0.16, 0.024, 0.12], glovePad);
-
-  const fingers = [
-    { x: 0.89, y: -0.78, z: 1.37, length: 0.161, width: 0.036, restCurl: 0.45 },
-    { x: 1, y: -0.78, z: 1.38, length: 0.231, width: 0.041, restCurl: 0.32 },
-    { x: 1.1, y: -0.78, z: 1.38, length: 0.217, width: 0.041, restCurl: 0.36 },
-    { x: 1.2, y: -0.78, z: 1.37, length: 0.168, width: 0.036, restCurl: 0.5 },
+  const worldPalm = [
+    place(palmLocal)[0] + palmShift[0],
+    place(palmLocal)[1] + palmShift[1],
+    place(palmLocal)[2] + palmShift[2],
   ];
 
-  for (const finger of fingers) {
-    const flex = finger.restCurl + Math.sin(phase * 1.2 + finger.x * 9) * 0.16 * (0.35 + moveAmount);
-    addFinger(vertices, handBasis, placeHand, side, finger, flex, skin, palm, glovePad, nail);
-  }
-
-  const thumbFlex = 0.45 + Math.sin(phase * 1.15 + side) * 0.12 * (0.4 + moveAmount);
-  addThumb(vertices, handBasis, placeHand, side, thumbFlex, skin, palm, glovePad, nail, handScale);
+  addTacticalGlove(vertices, basis, worldPalm, side, 0.16 + holdBlend * 0.9, 0.7, !(side < 0 && holdBlend > 0.35));
 }
 
 function addFinger(vertices, basis, place, side, finger, flex, skin, palm, glovePad, nail) {
@@ -2372,7 +3757,7 @@ function addFinger(vertices, basis, place, side, finger, flex, skin, palm, glove
     glovePad,
   );
 
-  addViewEllipsoid(
+  addBeveledViewBox(
     vertices,
     basis,
     place([
@@ -2382,8 +3767,6 @@ function addFinger(vertices, basis, place, side, finger, flex, skin, palm, glove
     ]),
     [finger.width * 0.68, 0.032, 0.04],
     nail,
-    5,
-    10,
   );
 }
 
@@ -2397,14 +3780,12 @@ function addThumb(vertices, basis, place, side, flex, skin, palm, glovePad, nail
   addHybridHandPart(vertices, basis, place(thumbSegments[0]), [0.075 * scale, 0.08 * scale, 0.14 * scale], [0.09 * scale, 0.09 * scale, 0.16 * scale], palm, palm, 8, 14);
   addHybridHandPart(vertices, basis, place(thumbSegments[1]), [0.06 * scale, 0.065 * scale, 0.12 * scale], [0.075 * scale, 0.075 * scale, 0.14 * scale], palm, skin, 8, 14);
   addBeveledViewBox(vertices, basis, place([side * 1.27, base[1] + 0.04 - flex * 0.05, base[2] + 0.1]), [0.055 * scale, 0.02 * scale, 0.06 * scale], glovePad);
-  addViewEllipsoid(
+  addBeveledViewBox(
     vertices,
     basis,
     place([side * 1.32, base[1] + 0.032 - flex * 0.09, base[2] + 0.23 - flex * 0.06]),
     [0.047 * scale, 0.034 * scale, 0.04 * scale],
     nail,
-    5,
-    10,
   );
 }
 
@@ -2414,23 +3795,52 @@ function addBentLeftForearm(vertices, basis, place, palm, glovePad) {
   addBeveledViewBox(vertices, basis, place([-0.46, -0.83, 1.18]), [0.12, 0.095, 0.18], glovePad);
 }
 
+function getViewRight() {
+  return [-Math.cos(player.yaw), 0, Math.sin(player.yaw)];
+}
+
 function makeViewBasis(lookDirection, origin) {
   const forward = normalize([...lookDirection]);
-  const right = normalize(cross([0, 1, 0], forward));
-  const up = normalize(cross(forward, right));
+  const right = getViewRight();
+  const up = normalize(cross(right, forward));
 
   return { origin, forward, right, up };
 }
 
-function makeHandBasis(basis, side, swayTwist) {
-  const inward = -side * (0.26 + swayTwist);
+function mixBasis(a, b, t) {
+  if (t <= 0) return a;
+  if (t >= 1) return b;
+  const forward = normalize(mix3(a.forward, b.forward, t));
+  const upHint = mix3(a.up, b.up, t);
+  const rightHint = mix3(a.right, b.right, t);
+  let right = cross(forward, upHint);
+  if (Math.hypot(right[0], right[1], right[2]) < 0.001) {
+    right = rightHint;
+  }
+  right = normalize(right);
+  if (right[0] * rightHint[0] + right[1] * rightHint[1] + right[2] * rightHint[2] < 0) {
+    right = [-right[0], -right[1], -right[2]];
+  }
+  const up = normalize(cross(right, forward));
+  return { origin: a.origin, forward, right, up };
+}
+
+function makeHandBasis(basis, side, swayTwist, inwardScale = 1) {
+  const inward = -side * (0.26 * inwardScale + swayTwist);
   const forward = normalize([
     basis.forward[0] + basis.right[0] * inward - basis.up[0] * 0.12,
     basis.forward[1] + basis.right[1] * inward - basis.up[1] * 0.12,
     basis.forward[2] + basis.right[2] * inward - basis.up[2] * 0.12,
   ]);
-  const right = normalize(cross([0, 1, 0], forward));
-  const up = normalize(cross(forward, right));
+  let right = cross(forward, basis.up);
+  if (Math.hypot(right[0], right[1], right[2]) < 0.001) {
+    right = [...basis.right];
+  }
+  right = normalize(right);
+  if (right[0] * basis.right[0] + right[1] * basis.right[1] + right[2] * basis.right[2] < 0) {
+    right = [-right[0], -right[1], -right[2]];
+  }
+  const up = normalize(cross(right, forward));
 
   return { origin: basis.origin, forward, right, up };
 }
@@ -2504,63 +3914,7 @@ function addHybridHandPart(
   rings = 8,
   segments = 14,
 ) {
-  addBeveledViewBox(vertices, basis, center, blockSize, blockColor.map((value) => value * 0.9));
-  addViewEllipsoid(vertices, basis, center, smoothSize, smoothColor, rings, segments);
-}
-
-function addViewEllipsoid(vertices, basis, center, size, color, rings = 8, segments = 14) {
-  const [cx, cy, cz] = center;
-  const [rx, ry, rz] = size.map((value) => value / 2);
-  const lightDirection = normalize([-0.35, 0.78, 0.52]);
-  const point = (normal) =>
-    toWorldPoint(
-      basis,
-      cx + normal[0] * rx,
-      cy + normal[1] * ry,
-      cz + normal[2] * rz,
-    );
-
-  for (let ring = 0; ring < rings; ring += 1) {
-    const v0 = ring / rings;
-    const v1 = (ring + 1) / rings;
-    const theta0 = v0 * Math.PI;
-    const theta1 = v1 * Math.PI;
-
-    for (let segment = 0; segment < segments; segment += 1) {
-      const u0 = segment / segments;
-      const u1 = (segment + 1) / segments;
-      const phi0 = u0 * Math.PI * 2;
-      const phi1 = u1 * Math.PI * 2;
-      const n00 = sphereNormal(theta0, phi0);
-      const n01 = sphereNormal(theta0, phi1);
-      const n10 = sphereNormal(theta1, phi0);
-      const n11 = sphereNormal(theta1, phi1);
-
-      addSmoothTriangle(vertices, point(n00), point(n10), point(n11), color, n00, n10, n11, lightDirection);
-      addSmoothTriangle(vertices, point(n00), point(n11), point(n01), color, n00, n11, n01, lightDirection);
-    }
-  }
-}
-
-function sphereNormal(theta, phi) {
-  return [
-    Math.sin(theta) * Math.cos(phi),
-    Math.cos(theta),
-    Math.sin(theta) * Math.sin(phi),
-  ];
-}
-
-function addSmoothTriangle(vertices, a, b, c, color, na, nb, nc, lightDirection) {
-  pushVertex(vertices, ...a, shadeColor(color, na, lightDirection));
-  pushVertex(vertices, ...b, shadeColor(color, nb, lightDirection));
-  pushVertex(vertices, ...c, shadeColor(color, nc, lightDirection));
-}
-
-function shadeColor(color, normal, lightDirection) {
-  const diffuse = Math.max(dot(normal, lightDirection), 0);
-  const highlight = Math.pow(diffuse, 4) * 0.22;
-  const shade = 0.68 + diffuse * 0.38;
-  return color.map((value) => clamp(value * shade + highlight, 0, 1));
+  addBeveledViewBox(vertices, basis, center, blockSize, blockColor);
 }
 
 function addPolygonFace(vertices, points, color) {
